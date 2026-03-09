@@ -4,5 +4,12 @@
     "name": "Bellwether Technology",
     "email": "dev@bellwethertech.com"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "flywheel",
+      "source": "./plugins/flywheel",
+      "description": "Flywheel work item management — orchestrate, plan, and execute tasks",
+      "version": "1.0.0"
+    }
+  ]
 }
