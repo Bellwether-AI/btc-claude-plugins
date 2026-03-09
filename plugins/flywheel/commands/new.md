@@ -57,9 +57,9 @@ Don't ask for success criteria yet - that's the `/flywheel:define` step.
 ### 2. Determine Target Project
 
 Infer from conversation or ask:
-- `bellwether/BellwetherPlatform`
-- `sophia/Sophia.Core`
-- `sophia/Sophia.Api`
+- `my-org/MyProject`
+- `team-a/ServiceApi`
+- `team-b/SharedLib`
 - `personal/[project-name]`
 - Other (specify path)
 

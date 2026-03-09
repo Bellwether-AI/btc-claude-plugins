@@ -192,7 +192,7 @@ Then for each file found, run a separate Bash call:
 rm -f /absolute/path/to/project/.flywheel-prompt-exact-filename.txt
 ```
 
-Prompt files may also exist in other project directories (sophia/, bellwether/, personal/). If the work item's project is not flywheel, also clean up that project's directory using the same Glob-then-rm approach:
+Prompt files may also exist in other project directories. If the work item's project is not flywheel, also clean up that project's directory using the same Glob-then-rm approach:
 ```
 Glob(pattern=".flywheel-prompt-*.txt", path="/absolute/path/to/other/project")
 ```
