@@ -17,15 +17,17 @@ The daemon auto-restarts on crash (up to 5 retries). It must be restarted via `l
 
 ## Environment
 
-Resolve these before running:
-
 - `FLYWHEEL_PATH`: Default `~/.flywheel`
-- `FLYWHEEL_AGENT_PATH`: The directory containing the flywheel agent source (find via `grep -l "flywheel.*agent" ~/Library/LaunchAgents/com.flywheel.agent.plist` or ask the user)
-- `HOOK_PORT`: The port the hook server listens on (check the agent config or plist, typically `9753`)
 
 ## Steps
 
-1. **Build the agent**:
+1. **Resolve paths from the plist**:
+
+Read `~/Library/LaunchAgents/com.flywheel.agent.plist` to extract:
+- `FLYWHEEL_AGENT_PATH`: The `WorkingDirectory` value from the plist
+- `HOOK_PORT`: Parse from the `ProgramArguments` or environment variables in the plist (default `9753`)
+
+2. **Build the agent**:
 
 ```bash
 npm run build --prefix $FLYWHEEL_AGENT_PATH
@@ -33,7 +35,7 @@ npm run build --prefix $FLYWHEEL_AGENT_PATH
 
 If the build fails, fix the TypeScript errors before proceeding.
 
-2. **Restart via launchctl**:
+3. **Restart via launchctl**:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.flywheel.agent.plist
@@ -45,7 +47,7 @@ Wait 2 seconds, then:
 launchctl load ~/Library/LaunchAgents/com.flywheel.agent.plist
 ```
 
-3. **Verify the restart** by reading the last 15 lines of the log file at `$FLYWHEEL_PATH/logs/agent.log`. Confirm you see:
+4. **Verify the restart** by reading the last 15 lines of the log file at `$FLYWHEEL_PATH/logs/agent.log`. Confirm you see:
    - `Flywheel Agent starting...`
    - `Hook server listening on http://127.0.0.1:$HOOK_PORT`
    - `Connected to Flywheel hub`
@@ -53,4 +55,4 @@ launchctl load ~/Library/LaunchAgents/com.flywheel.agent.plist
 
 If the log shows `EADDRINUSE`, the previous process hasn't fully stopped. Wait a few more seconds and try the `launchctl load` again.
 
-4. **Report the result** to the user — success or any errors seen in the log.
+5. **Report the result** to the user — success or any errors seen in the log.
