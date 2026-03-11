@@ -247,48 +247,25 @@ Choose (1/2): _
 **If no worktree settings exist:**
 Silently continue to cleanup - don't prompt if nothing to migrate.
 
-**IMPORTANT:** All git commands below use `git -C "$MAIN_PROJECT"` to target the main repo. The worktree directory will be deleted during cleanup, which kills Claude Code's Bash tool (it checks cwd exists before every command). Therefore, **branch deletion and prune MUST happen BEFORE worktree removal**.
+**Send cleanup to agent daemon:**
 
-**Step 1: Detach HEAD in the worktree** (so the branch is no longer checked out):
-```bash
-git -C "$WORKTREE_PATH" checkout --detach
+The agent daemon runs as a separate process with a stable CWD, so it can safely perform worktree removal, branch deletion, and tmux session cleanup without breaking itself.
+
+Send a single `killSession` command to the agent's local hook server with the worktree details. The agent will handle: detach HEAD, worktree prune, worktree remove, directory cleanup, branch delete, tmux kill-session, and iTerm2 pane close.
+
+Read the tmux session name from the work item metadata (`- tmux-session:` field). Use `Grep` to extract it:
+```
+Grep(pattern="^- tmux-session:", path="$WORK_ITEM_PATH", output_mode="content")
 ```
 
-**Step 2: Delete the branch** — try soft delete first, then force if needed (separate Bash calls). This MUST happen while cwd still exists:
-
-1. Try soft delete:
+Send the cleanup request (single Bash call). Substitute the actual values for `$TMUX_SESSION`, `$WORKTREE_PATH`, `$BRANCH`, and `$MAIN_PROJECT`:
 ```bash
-git -C "$MAIN_PROJECT" branch -d "$BRANCH"
+curl -s -X POST http://127.0.0.1:9753/command -H 'Content-Type: application/json' -d '{"type":"killSession","payload":{"sessionName":"$TMUX_SESSION","worktreePath":"$WORKTREE_PATH","branch":"$BRANCH","mainProjectPath":"$MAIN_PROJECT"}}'
 ```
 
-2. If soft delete fails (e.g., unmerged changes), try force delete:
-```bash
-git -C "$MAIN_PROJECT" branch -D "$BRANCH"
-```
+**This is fire-and-forget.** The curl returns immediately with `{"status":"ok"}`. The agent handles the actual cleanup asynchronously. Do NOT run any further git or rm commands for worktree cleanup — the agent handles everything.
 
-**Step 3: Prune orphaned worktree references** (separate Bash call):
-```bash
-git -C "$MAIN_PROJECT" worktree prune
-```
-
-**Step 4: Remove worktree** — this destroys the cwd, so it MUST be the last git operation. Run each as a separate Bash call. Handle failures in agent logic, not shell:
-
-1. Remove git worktree registration:
-```bash
-git -C "$MAIN_PROJECT" worktree remove "$WORKTREE_PATH" --force
-```
-If this fails, continue to the next step.
-
-2. Remove the directory (worktree remove may leave behind untracked files). Note: this may also fail if cwd was inside the worktree — that's OK, the worktree is already deregistered:
-```bash
-rm -rf "$WORKTREE_PATH"
-```
-
-**Worktree Cleanup Error Handling:**
-- `git worktree remove` deregisters the worktree; `rm -rf` ensures the directory is fully removed
-- After worktree removal, the Bash tool may stop working if cwd was inside the worktree — this is expected and OK since all critical operations (branch delete, prune) already completed
-- If the directory doesn't exist, that's fine - cleanup is already done
-- If all cleanup fails, report the issue and let the user clean up manually
+**If the curl fails** (agent not running, connection refused), report the issue and suggest the user run cleanup manually.
 
 ### 9. Capture Learnings (Auto-Detect)
 
@@ -448,8 +425,7 @@ If status is already `done`:
 ## Key Rules
 
 1. **Always verify before shipping** - run all project checks first
-2. **Delete branch BEFORE removing worktree** - worktree removal kills the Bash tool's cwd
+2. **Worktree cleanup is fire-and-forget** - send killSession to agent, don't run inline git/rm cleanup
 3. **Archive work item after successful push** - keeps done/ as permanent record
 4. **Main workflow is simpler** - no branches, no PRs, no worktree cleanup
-5. **Do NOT retry failing cleanup commands** - if a command fails, use the fallback approach or report the issue; never retry the same failing command more than once
-6. **Only push flywheel repo for flywheel projects** - other projects may not have remote access
+5. **Only push flywheel repo for flywheel projects** - other projects may not have remote access
