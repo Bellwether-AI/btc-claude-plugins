@@ -1,3 +1,6 @@
+---
+description: Commit, push, create PR, and archive a completed work item
+---
 # Flywheel: Done
 
 Commit, push, create PR (if applicable), archive work item, and clean up. Transitions `review` → `done`.
@@ -37,16 +40,16 @@ FLYWHEEL_PATH="$HOME/.flywheel"
 
 ### 1. Load the Work Item
 
-Check for a prompt file first (launched from dashboard):
+If you were given a prompt file to read (e.g., `.flywheel-prompt-*.txt`), you already have the work item path from that file — use `Read` to load it directly. Do not search for other work items.
+
+Otherwise, find the work item:
 
 1. Use `Glob(pattern=".flywheel-prompt-*.txt")` to find prompt files in the current directory
 2. If found, use `Read` to read the prompt file contents
+3. If no prompt file, use `Grep(pattern="^- status: review", path="$FLYWHEEL_PATH/work/")` to find work items with status `review`
+4. Use `Read` to read the matching work item file
 
-Or find a `review` work item:
-
-1. Use `Grep(pattern="^- status: review", path="$FLYWHEEL_PATH/work/")` to find work items with status `review`
-2. Use `Read` to read the matching work item file
-3. Extract `WORK_ITEM_PATH` and `WORK_ITEM_FILENAME` from the matched file path
+Extract `WORK_ITEM_PATH` and `WORK_ITEM_FILENAME` from the file path.
 
 Read the work item to understand:
 - The workflow type (main vs worktree)
@@ -266,31 +269,7 @@ Choose (1/2): _
 **If no worktree settings exist:**
 Silently continue to cleanup - don't prompt if nothing to migrate.
 
-**Navigate to main project FIRST** (critical - prevents shell from breaking when removing current directory):
-```bash
-cd "$MAIN_PROJECT"
-```
-Note: This is a legitimate use of `cd` — you must leave the worktree directory before removing it.
-
-**Prune orphaned worktree references** (separate Bash call):
-```bash
-git worktree prune
-```
-
-**Remove worktree** — run each as a separate Bash call. Handle failures in agent logic, not shell:
-
-1. Remove git worktree registration:
-```bash
-git worktree remove "$WORKTREE_PATH" --force
-```
-If this fails, continue to the next step.
-
-2. Remove the directory (worktree remove may leave behind untracked files):
-```bash
-rm -rf "$WORKTREE_PATH"
-```
-
-**Delete the branch** — try soft delete first, then force if needed (separate Bash calls):
+**Delete the branch FIRST** — this MUST happen before worktree removal. Claude Code's Bash tool validates the shell CWD exists before executing any command (even with `git -C`). Once the worktree directory is removed, no further Bash calls will work. Try soft delete first, then force if needed (separate Bash calls):
 
 1. Try soft delete:
 ```bash
@@ -302,10 +281,16 @@ git branch -d "$BRANCH"
 git branch -D "$BRANCH"
 ```
 
+**Prune orphaned worktree references** (separate Bash call):
+```bash
+git worktree prune
+```
+
+**Do NOT remove the worktree directory here.** Worktree removal is deferred to step 11 (after Capture Learnings and Report) so that the shell CWD remains valid for all remaining steps and the stop hook.
+
 **Worktree Cleanup Error Handling:**
-- `git worktree remove` deregisters the worktree; `rm -rf` ensures the directory is fully removed
-- If the directory doesn't exist, that's fine - cleanup is already done
-- If all cleanup fails, report the issue and let the user clean up manually
+- If branch deletion fails on both soft and force delete, report the issue and let the user clean up manually
+- The worktree directory will be removed in step 11 as the absolute last action
 
 ### 9. Capture Learnings (Auto-Detect)
 
@@ -414,14 +399,33 @@ Run `/flywheel:new` to create another work item.
 - **Location**: work/[filename]
 
 ### Cleanup
-- Worktree removed: [path]
 - Branch deleted: [branch]
 - Prompt files removed
-- Now in: [main project]
+- Worktree will be removed next (final step)
 
 ### Ready for Next
 Run `/flywheel:new` to create another work item.
 ```
+
+### 11. Final Worktree Removal (Worktree Workflow Only)
+
+**Skip this step if workflow is `main`.**
+
+This step MUST be the absolute last action in the entire done flow. After the worktree directory is removed, the shell CWD no longer exists and no further Bash calls will work. The stop hook may also fail with a non-blocking ENOENT error — this is expected and harmless.
+
+**Remove worktree** (single Bash call — this is the FINAL Bash call):
+```bash
+git -C "$MAIN_PROJECT" worktree remove "$WORKTREE_PATH" --force
+```
+
+If this fails (e.g., worktree has uncommitted changes), report the issue:
+```markdown
+Worktree removal failed. Clean up manually:
+`git -C $MAIN_PROJECT worktree remove $WORKTREE_PATH --force`
+`rm -rf $WORKTREE_PATH`
+```
+
+**Do NOT run any Bash calls after this step.** The shell CWD is gone.
 
 ## Status Transition
 
@@ -465,7 +469,7 @@ If status is already `done`:
 ## Key Rules
 
 1. **Always verify before shipping** - run all project checks first
-2. **Navigate to main project BEFORE removing worktree** - prevents shell breakage
+2. **Delete branch BEFORE removing worktree** - worktree removal destroys CWD, making all subsequent Bash calls fail
 3. **Archive work item after successful push** - keeps done/ as permanent record
 4. **Main workflow is simpler** - no branches, no PRs, no worktree cleanup
 5. **Do NOT retry failing cleanup commands** - if a command fails, use the fallback approach or report the issue; never retry the same failing command more than once
