@@ -1,18 +1,9 @@
+---
+description: Break down a large task into smaller work items
+---
 # Flywheel: Planning & Organizing
 
 Break down a large task into smaller work items, creating sub-items via `/flywheel:new` and linking them to the parent.
-
-## Command Execution Guidelines
-
-**CRITICAL**: Follow these rules to minimize permission prompts:
-
-1. **Use dedicated tools instead of shell equivalents:**
-   - `Glob` instead of `find` or `ls` for file discovery
-   - `Grep` instead of `grep` or `grep -q` for pattern matching
-   - `Read` instead of `cat` for reading files
-   - `Edit` instead of `sed -i` for file modifications
-2. **One command per Bash call** — never chain with `&&`, `;`, or `||`
-3. **Use absolute paths or `git -C`** — never `cd dir && git ...`
 
 ## Environment
 

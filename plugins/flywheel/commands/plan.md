@@ -1,3 +1,6 @@
+---
+description: Create an implementation plan for a defined work item
+---
 # Flywheel: Create Implementation Plan
 
 Explore the codebase, design an implementation approach, and transition a work item from `defined` → `planned`.
@@ -26,46 +29,25 @@ The plan will be executed later by `/flywheel:execute`.
 FLYWHEEL_PATH="$HOME/.flywheel"
 ```
 
-## Command Execution Guidelines
-
-**CRITICAL**: Follow these rules to minimize permission prompts:
-
-1. **Use dedicated tools instead of shell equivalents:**
-   - `Glob` instead of `find` or `ls` for file discovery
-   - `Grep` instead of `grep` or `grep -q` for pattern matching
-   - `Read` instead of `cat` for reading files
-   - `Edit` instead of `sed -i` for file modifications
-2. **One command per Bash call** — never chain with `&&`, `;`, or `||`
-   - Bad: `rm -f file.txt 2>/dev/null; echo "done"`
-   - Good: `rm -f file.txt`
-3. **No echo suffixes** — `rm -f` with `2>/dev/null` is already silent on failure
-4. **Use absolute paths or `git -C`** — never `cd dir && git ...`
-   - Bad: `cd /path/to/repo && git add . && git commit -m "msg"`
-   - Good: Three separate calls: `git -C /path/to/repo add .`, then `git -C /path/to/repo commit -m "msg"`
-5. **Handle fallbacks in agent logic** — don't use `cmd1 || cmd2` in shell
-   - Bad: `git branch -d "$B" 2>/dev/null || git branch -D "$B"`
-   - Good: Try `git branch -d "$B"` first; if it fails, try `git branch -D "$B"` as a separate call
-6. **No glob patterns in rm/write operations** — use `Glob` tool first, then `rm -f` each file individually
-   - Bad: `rm -f .flywheel-prompt-*.txt`
-   - Good: Use `Glob(pattern=".flywheel-prompt-*.txt")` to find files, then `rm -f /exact/path/to/file.txt` for each
-
 ## Process
 
 ### 1. Load the Work Item
 
-Check for a prompt file first (launched from dashboard):
+If you were given a prompt file to read (e.g., `.flywheel-prompt-*.txt`), you already have the work item path from that file — use `Read` to load it directly. Do not search for other work items.
+
+Otherwise, find the work item:
 
 1. Use `Glob(pattern=".flywheel-prompt-*.txt")` to find prompt files in the current directory
 2. If found, use `Read` to read the prompt file contents
-
-Or find a `defined` work item:
-
-1. Use `Grep(pattern="^- status: defined", path="$FLYWHEEL_PATH/work/")` to find work items with status `defined`
-2. Use `Read` to read the matching work item file
+3. If no prompt file, use `Grep(pattern="^- status: defined", path="$FLYWHEEL_PATH/work/")` to find work items with status `defined`
+4. If multiple files match, pick the most recently modified file (latest date prefix in filename). If still ambiguous, ask the user which work item to use.
+5. Use `Read` to read the matching work item file
 
 Read the work item to understand the success criteria.
 
 **Check effort level:** Look for `- effort:` in the work item metadata. If effort is `high`, note this — the plan should reflect thorough reasoning: "This is a high-complexity work item requiring thorough reasoning and careful architectural consideration."
+
+**Subfolder Focus:** If the work item has a `- subfolder:` field in its metadata, scope all codebase exploration (step 2) and the implementation plan to that directory within the project. Reference files relative to the subfolder root.
 
 ### 2. Explore the Codebase
 
@@ -291,7 +273,7 @@ If matches are found, the work item is in unattended mode.
 - Instead, immediately invoke `/flywheel:execute` using the Skill tool:
 
 ```
-Use the Skill tool to invoke "flywheel-execute"
+Use the Skill tool to invoke "flywheel:execute"
 ```
 
 **If not in unattended mode:**

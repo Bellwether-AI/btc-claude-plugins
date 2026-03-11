@@ -1,3 +1,6 @@
+---
+description: Execute the implementation plan for a work item
+---
 # Flywheel: Execute Plan
 
 Execute the implementation plan autonomously, transitioning `planned` → `review` (items stay in `planned` during execution).
@@ -8,42 +11,34 @@ Execute the implementation plan autonomously, transitioning `planned` → `revie
 FLYWHEEL_PATH="$HOME/.flywheel"
 ```
 
-## Command Execution Guidelines
+## Arguments
 
-**CRITICAL**: Follow these rules to minimize permission prompts:
+This skill accepts optional arguments that change its behavior:
 
-1. **Use dedicated tools instead of shell equivalents:**
-   - `Glob` instead of `find` or `ls` for file discovery
-   - `Grep` instead of `grep` or `grep -q` for pattern matching
-   - `Read` instead of `cat` for reading files
-   - `Edit` instead of `sed -i` for file modifications
-2. **One command per Bash call** — never chain with `&&`, `;`, or `||`
-   - Bad: `rm -f file.txt 2>/dev/null; echo "done"`
-   - Good: `rm -f file.txt`
-3. **No echo suffixes** — `rm -f` with `2>/dev/null` is already silent on failure
-4. **Use absolute paths or `git -C`** — never `cd dir && git ...`
-   - Bad: `cd /path/to/repo && git add . && git commit -m "msg"`
-   - Good: Three separate calls: `git -C /path/to/repo add .`, then `git -C /path/to/repo commit -m "msg"`
-5. **Handle fallbacks in agent logic** — don't use `cmd1 || cmd2` in shell
-   - Bad: `git branch -d "$B" 2>/dev/null || git branch -D "$B"`
-   - Good: Try `git branch -d "$B"` first; if it fails, try `git branch -D "$B"` as a separate call
-6. **No glob patterns in rm/write operations** — use `Glob` tool first, then `rm -f` each file individually
-   - Bad: `rm -f .flywheel-prompt-*.txt`
-   - Good: Use `Glob(pattern=".flywheel-prompt-*.txt")` to find files, then `rm -f /exact/path/to/file.txt` for each
+- `/flywheel:execute` — Run the full plan from the beginning
+- `/flywheel:execute step N` — Run only step N from the plan, then stop
+- `/flywheel:execute verify` — Skip implementation, only run verification (step 5)
+- `/flywheel:execute resume` — Continue from the last logged progress in the Execution Log
+
+Parse the argument string passed to this skill. If an argument is present, adjust the process accordingly:
+- **`step N`**: After loading the work item, skip to step N in the Implementation Plan. Execute only that step, verify it, update the log, then stop.
+- **`verify`**: After loading the work item, skip directly to step 5 (Verify Success Criteria). Do not implement anything.
+- **`resume`**: After loading the work item, read the Execution Log to find the last completed step, then continue from the next step.
+- **No argument**: Run the full process below.
 
 ## Process
 
 ### 1. Load the Work Item
 
-Check for a prompt file first (launched from dashboard):
+If you were given a prompt file to read (e.g., `.flywheel-prompt-*.txt`), you already have the work item path from that file — use `Read` to load it directly. Do not search for other work items.
+
+Otherwise, find the work item:
 
 1. Use `Glob(pattern=".flywheel-prompt-*.txt")` to find prompt files in the current directory
 2. If found, use `Read` to read the prompt file contents
-
-Or find a `planned` work item:
-
-1. Use `Grep(pattern="^- status: planned", path="$FLYWHEEL_PATH/work/")` to find work items with status `planned`
-2. Use `Read` to read the matching work item file
+3. If no prompt file, use `Grep(pattern="^- status: planned", path="$FLYWHEEL_PATH/work/")` to find work items with status `planned`
+4. If multiple files match, pick the most recently modified file (latest date prefix in filename). If still ambiguous, ask the user which work item to use.
+5. Use `Read` to read the matching work item file
 
 Read the work item to understand:
 - The implementation plan
@@ -51,6 +46,8 @@ Read the work item to understand:
 - Current progress (if resuming)
 
 **Check effort level:** Look for `- effort:` in the work item metadata. If effort is `high`, use thorough reasoning for all implementation decisions: "This is a high-complexity work item. Use thorough reasoning for all implementation decisions."
+
+**Subfolder Focus:** If the work item has a `- subfolder:` field in its metadata, scope all implementation work to that directory within the project. Only modify files within the subfolder unless the plan explicitly references files outside it.
 
 ### 2. Prepare for Execution
 
@@ -407,13 +404,6 @@ Or if blocked:
 ```
 planned → blocked
 ```
-
-## Arguments
-
-- `/flywheel:execute` - Run the full plan
-- `/flywheel:execute step N` - Run only step N
-- `/flywheel:execute verify` - Only run verification, no implementation
-- `/flywheel:execute resume` - Continue from last logged progress
 
 ## If Work Item Not Planned
 

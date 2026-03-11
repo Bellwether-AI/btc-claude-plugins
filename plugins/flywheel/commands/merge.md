@@ -1,31 +1,11 @@
+---
+description: Merge open PRs, sync local main, and clean up artifacts
+---
 # Flywheel: Merge
 
 Merge all open PRs for the current repo, sync local main, and clean up any stray flywheel artifacts.
 
 This is a finalization command run after the user has reviewed all open PRs.
-
-## Command Execution Guidelines
-
-**CRITICAL**: Follow these rules to minimize permission prompts:
-
-1. **Use dedicated tools instead of shell equivalents:**
-   - `Glob` instead of `find` or `ls` for file discovery
-   - `Grep` instead of `grep` or `grep -q` for pattern matching
-   - `Read` instead of `cat` for reading files
-   - `Edit` instead of `sed -i` for file modifications
-2. **One command per Bash call** — never chain with `&&`, `;`, or `||`
-   - Bad: `rm -f file.txt 2>/dev/null; echo "done"`
-   - Good: `rm -f file.txt`
-3. **No echo suffixes** — `rm -f` with `2>/dev/null` is already silent on failure
-4. **Use absolute paths or `git -C`** — never `cd dir && git ...`
-   - Bad: `cd /path/to/repo && git add . && git commit -m "msg"`
-   - Good: Three separate calls: `git -C /path/to/repo add .`, then `git -C /path/to/repo commit -m "msg"`
-5. **Handle fallbacks in agent logic** — don't use `cmd1 || cmd2` in shell
-   - Bad: `git branch -d "$B" 2>/dev/null || git branch -D "$B"`
-   - Good: Try `git branch -d "$B"` first; if it fails, try `git branch -D "$B"` as a separate call
-6. **No glob patterns in rm/write operations** — use `Glob` tool first, then `rm -f` each file individually
-   - Bad: `rm -f .flywheel-prompt-*.txt`
-   - Good: Use `Glob(pattern=".flywheel-prompt-*.txt")` to find files, then `rm -f /exact/path/to/file.txt` for each
 
 ## Environment
 

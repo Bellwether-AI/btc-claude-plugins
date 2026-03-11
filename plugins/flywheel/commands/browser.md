@@ -1,18 +1,9 @@
+---
+description: Perform browser-based admin tasks, forms, and tickets using Chrome automation
+---
 # Flywheel: Browser Tasks
 
 Perform administrative tasks, fill out forms, file tickets, and complete browser-based work using Chrome automation.
-
-## Command Execution Guidelines
-
-**CRITICAL**: Follow these rules to minimize permission prompts:
-
-1. **Use dedicated tools instead of shell equivalents:**
-   - `Glob` instead of `find` or `ls` for file discovery
-   - `Grep` instead of `grep` or `grep -q` for pattern matching
-   - `Read` instead of `cat` for reading files
-   - `Edit` instead of `sed -i` for file modifications
-2. **One command per Bash call** — never chain with `&&`, `;`, or `||`
-3. **Use absolute paths or `git -C`** — never `cd dir && git ...`
 
 ## Environment
 

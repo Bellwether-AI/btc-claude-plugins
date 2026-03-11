@@ -7,29 +7,6 @@ Commit, push, create PR (if applicable), archive work item, and clean up. Transi
 
 This command merges the functionality of the old `/flywheel-ship` and `/flywheel-cleanup` commands.
 
-## Command Execution Guidelines
-
-**CRITICAL**: Follow these rules to minimize permission prompts:
-
-1. **Use dedicated tools instead of shell equivalents:**
-   - `Glob` instead of `find` or `ls` for file discovery
-   - `Grep` instead of `grep` or `grep -q` for pattern matching
-   - `Read` instead of `cat` for reading files
-   - `Edit` instead of `sed -i` for file modifications
-2. **One command per Bash call** — never chain with `&&`, `;`, or `||`
-   - Bad: `rm -f file.txt 2>/dev/null; echo "done"`
-   - Good: `rm -f file.txt`
-3. **No echo suffixes** — `rm -f` with `2>/dev/null` is already silent on failure
-4. **Use absolute paths or `git -C`** — never `cd dir && git ...`
-   - Bad: `cd /path/to/repo && git add . && git commit -m "msg"`
-   - Good: Three separate calls: `git -C /path/to/repo add .`, then `git -C /path/to/repo commit -m "msg"`
-5. **Handle fallbacks in agent logic** — don't use `cmd1 || cmd2` in shell
-   - Bad: `git branch -d "$B" 2>/dev/null || git branch -D "$B"`
-   - Good: Try `git branch -d "$B"` first; if it fails, try `git branch -D "$B"` as a separate call
-6. **No glob patterns in rm/write operations** — use `Glob` tool first, then `rm -f` each file individually
-   - Bad: `rm -f .flywheel-prompt-*.txt`
-   - Good: Use `Glob(pattern=".flywheel-prompt-*.txt")` to find files, then `rm -f /exact/path/to/file.txt` for each
-
 ## Environment
 
 ```bash
@@ -47,7 +24,8 @@ Otherwise, find the work item:
 1. Use `Glob(pattern=".flywheel-prompt-*.txt")` to find prompt files in the current directory
 2. If found, use `Read` to read the prompt file contents
 3. If no prompt file, use `Grep(pattern="^- status: review", path="$FLYWHEEL_PATH/work/")` to find work items with status `review`
-4. Use `Read` to read the matching work item file
+4. If multiple files match, pick the most recently modified file (latest date prefix in filename). If still ambiguous, ask the user which work item to use.
+5. Use `Read` to read the matching work item file
 
 Extract `WORK_ITEM_PATH` and `WORK_ITEM_FILENAME` from the file path.
 
@@ -195,7 +173,7 @@ Then for each file found, run a separate Bash call:
 rm -f /absolute/path/to/project/.flywheel-prompt-exact-filename.txt
 ```
 
-Prompt files may also exist in other project directories. If the work item's project is not flywheel, also clean up that project's directory using the same Glob-then-rm approach:
+Prompt files may also exist in other project directories (sophia/, bellwether/, personal/). If the work item's project is not flywheel, also clean up that project's directory using the same Glob-then-rm approach:
 ```
 Glob(pattern=".flywheel-prompt-*.txt", path="/absolute/path/to/other/project")
 ```
@@ -203,7 +181,7 @@ Then `rm -f` each file found individually.
 
 #### If workflow is `worktree`:
 
-**CRITICAL: Capture info BEFORE changing directory.**
+**CRITICAL: Capture info BEFORE cleanup.**
 
 Run each as a separate Bash call and save the results in agent logic:
 
@@ -269,28 +247,48 @@ Choose (1/2): _
 **If no worktree settings exist:**
 Silently continue to cleanup - don't prompt if nothing to migrate.
 
-**Delete the branch FIRST** — this MUST happen before worktree removal. Claude Code's Bash tool validates the shell CWD exists before executing any command (even with `git -C`). Once the worktree directory is removed, no further Bash calls will work. Try soft delete first, then force if needed (separate Bash calls):
+**IMPORTANT:** All git commands below use `git -C "$MAIN_PROJECT"` to target the main repo. The worktree directory will be deleted during cleanup, which kills Claude Code's Bash tool (it checks cwd exists before every command). Therefore, **branch deletion and prune MUST happen BEFORE worktree removal**.
+
+**Step 1: Detach HEAD in the worktree** (so the branch is no longer checked out):
+```bash
+git -C "$WORKTREE_PATH" checkout --detach
+```
+
+**Step 2: Delete the branch** — try soft delete first, then force if needed (separate Bash calls). This MUST happen while cwd still exists:
 
 1. Try soft delete:
 ```bash
-git branch -d "$BRANCH"
+git -C "$MAIN_PROJECT" branch -d "$BRANCH"
 ```
 
-2. If soft delete fails, try force delete:
+2. If soft delete fails (e.g., unmerged changes), try force delete:
 ```bash
-git branch -D "$BRANCH"
+git -C "$MAIN_PROJECT" branch -D "$BRANCH"
 ```
 
-**Prune orphaned worktree references** (separate Bash call):
+**Step 3: Prune orphaned worktree references** (separate Bash call):
 ```bash
-git worktree prune
+git -C "$MAIN_PROJECT" worktree prune
 ```
 
-**Do NOT remove the worktree directory here.** Worktree removal is deferred to step 11 (after Capture Learnings and Report) so that the shell CWD remains valid for all remaining steps and the stop hook.
+**Step 4: Remove worktree** — this destroys the cwd, so it MUST be the last git operation. Run each as a separate Bash call. Handle failures in agent logic, not shell:
+
+1. Remove git worktree registration:
+```bash
+git -C "$MAIN_PROJECT" worktree remove "$WORKTREE_PATH" --force
+```
+If this fails, continue to the next step.
+
+2. Remove the directory (worktree remove may leave behind untracked files). Note: this may also fail if cwd was inside the worktree — that's OK, the worktree is already deregistered:
+```bash
+rm -rf "$WORKTREE_PATH"
+```
 
 **Worktree Cleanup Error Handling:**
-- If branch deletion fails on both soft and force delete, report the issue and let the user clean up manually
-- The worktree directory will be removed in step 11 as the absolute last action
+- `git worktree remove` deregisters the worktree; `rm -rf` ensures the directory is fully removed
+- After worktree removal, the Bash tool may stop working if cwd was inside the worktree — this is expected and OK since all critical operations (branch delete, prune) already completed
+- If the directory doesn't exist, that's fine - cleanup is already done
+- If all cleanup fails, report the issue and let the user clean up manually
 
 ### 9. Capture Learnings (Auto-Detect)
 
@@ -399,33 +397,14 @@ Run `/flywheel:new` to create another work item.
 - **Location**: work/[filename]
 
 ### Cleanup
+- Worktree removed: [path]
 - Branch deleted: [branch]
 - Prompt files removed
-- Worktree will be removed next (final step)
+- Now in: [main project]
 
 ### Ready for Next
 Run `/flywheel:new` to create another work item.
 ```
-
-### 11. Final Worktree Removal (Worktree Workflow Only)
-
-**Skip this step if workflow is `main`.**
-
-This step MUST be the absolute last action in the entire done flow. After the worktree directory is removed, the shell CWD no longer exists and no further Bash calls will work. The stop hook may also fail with a non-blocking ENOENT error — this is expected and harmless.
-
-**Remove worktree** (single Bash call — this is the FINAL Bash call):
-```bash
-git -C "$MAIN_PROJECT" worktree remove "$WORKTREE_PATH" --force
-```
-
-If this fails (e.g., worktree has uncommitted changes), report the issue:
-```markdown
-Worktree removal failed. Clean up manually:
-`git -C $MAIN_PROJECT worktree remove $WORKTREE_PATH --force`
-`rm -rf $WORKTREE_PATH`
-```
-
-**Do NOT run any Bash calls after this step.** The shell CWD is gone.
 
 ## Status Transition
 
@@ -469,7 +448,7 @@ If status is already `done`:
 ## Key Rules
 
 1. **Always verify before shipping** - run all project checks first
-2. **Delete branch BEFORE removing worktree** - worktree removal destroys CWD, making all subsequent Bash calls fail
+2. **Delete branch BEFORE removing worktree** - worktree removal kills the Bash tool's cwd
 3. **Archive work item after successful push** - keeps done/ as permanent record
 4. **Main workflow is simpler** - no branches, no PRs, no worktree cleanup
 5. **Do NOT retry failing cleanup commands** - if a command fails, use the fallback approach or report the issue; never retry the same failing command more than once

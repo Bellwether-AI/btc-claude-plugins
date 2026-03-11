@@ -1,29 +1,9 @@
+---
+description: Process permission requests and write to settings
+---
 # Flywheel: Process Permission Requests
 
 Read collected permission request logs, derive well-scoped permission entries, and write them to `settings.local.json` with user approval.
-
-## Command Execution Guidelines
-
-**CRITICAL**: Follow these rules to minimize permission prompts:
-
-1. **Use dedicated tools instead of shell equivalents:**
-   - `Glob` instead of `find` or `ls` for file discovery
-   - `Grep` instead of `grep` or `grep -q` for pattern matching
-   - `Read` instead of `cat` for reading files
-   - `Edit` instead of `sed -i` for file modifications
-2. **One command per Bash call** — never chain with `&&`, `;`, or `||`
-   - Bad: `rm -f file.txt 2>/dev/null; echo "done"`
-   - Good: `rm -f file.txt`
-3. **No echo suffixes** — `rm -f` with `2>/dev/null` is already silent on failure
-4. **Use absolute paths or `git -C`** — never `cd dir && git ...`
-   - Bad: `cd /path/to/repo && git add . && git commit -m "msg"`
-   - Good: Three separate calls: `git -C /path/to/repo add .`, then `git -C /path/to/repo commit -m "msg"`
-5. **Handle fallbacks in agent logic** — don't use `cmd1 || cmd2` in shell
-   - Bad: `git branch -d "$B" 2>/dev/null || git branch -D "$B"`
-   - Good: Try `git branch -d "$B"` first; if it fails, try `git branch -D "$B"` as a separate call
-6. **No glob patterns in rm/write operations** — use `Glob` tool first, then `rm -f` each file individually
-   - Bad: `rm -f .flywheel-prompt-*.txt`
-   - Good: Use `Glob(pattern=".flywheel-prompt-*.txt")` to find files, then `rm -f /exact/path/to/file.txt` for each
 
 ## Process
 
@@ -90,8 +70,8 @@ For each log entry, derive a Claude Code permission string using these rules:
 For any path containing `-worktrees/`:
 1. Extract the base repo name: `/path/to/repo-worktrees/branch/` → `repo`
 2. Generate TWO permission entries:
-   - Base repo: e.g., `Read(~/projects/my-project/**)`
-   - Worktrees glob: e.g., `Read(~/projects/my-project-worktrees/**)`
+   - Base repo: e.g., `Read(~/personal/flywheel/**)`
+   - Worktrees glob: e.g., `Read(~/personal/flywheel-worktrees/**)`
 
 For paths NOT in a worktree, derive a single permission entry using the directory path.
 
@@ -113,11 +93,11 @@ Ask the user which scope to check and write to:
 ```
 Which settings scope should I work with?
 1. Project .claude/settings.local.json (current project only)
-2. Global ~/.claude/settings.local.json (writes to all configured locations: global + area configs)
+2. Global ~/.claude/settings.local.json (writes to all 4 locations: global + personal/bellwether/sophia areas)
 3. Show proposals only (don't write)
 ```
 
-**Note on Global scope**: When "Global" is selected, rules are written to `~/.claude/settings.local.json` AND all area settings files (e.g., `~/.claude-area-1/`, `~/.claude-area-2/`). This is necessary because `CLAUDE_CONFIG_DIR` replaces `~/.claude/` in area sessions via direnv.
+**Note on Global scope**: When "Global" is selected, rules are written to `~/.claude/settings.local.json` AND all three area settings files (`~/.claude-personal/`, `~/.claude-bellwether/`, `~/.claude-sophia/`). This is necessary because `CLAUDE_CONFIG_DIR` replaces `~/.claude/` in area sessions via direnv.
 
 Use the AskUserQuestion tool with these options.
 
@@ -139,7 +119,7 @@ Display the proposed new permissions grouped by tool type:
 ### Read (X new)
 | # | Permission | Occurrences |
 |---|-----------|-------------|
-| 1 | `Read(~/projects/my-project/**)` | 12 |
+| 1 | `Read(~/personal/project/**)` | 12 |
 
 ### Already Exists (filtered out)
 - `Bash(git status:*)` (already in settings)
@@ -168,7 +148,7 @@ If confirmed:
 2. Parse the JSON
 3. Add the new entries to `permissions.allow`
 4. Write the file back with proper formatting (2-space indent)
-5. **If Global scope**: also write the same entries to all area settings files (e.g., `~/.claude-area-1/settings.local.json`, `~/.claude-area-2/settings.local.json`), preserving existing area-specific rules
+5. **If Global scope**: also write the same entries to all 3 area settings files (`~/.claude-personal/settings.local.json`, `~/.claude-bellwether/settings.local.json`, `~/.claude-sophia/settings.local.json`), preserving existing area-specific rules
 
 ### 8. Optionally Clear Log
 
