@@ -168,30 +168,6 @@ Report:
 Run `/flywheel:plan` to create an implementation plan.
 ```
 
-### 8. Check for Unattended Mode
-
-After confirming the definition, check if the work item should proceed automatically.
-
-**Check condition:**
-1. Work item has `- unattended: true` in metadata
-
-Use the `Grep` tool to check:
-```
-Grep(pattern="^- unattended: true", path="$WORK_ITEM_PATH")
-```
-If matches are found, the work item is in unattended mode.
-
-**If unattended mode is set (matches found):**
-- Do NOT show "Run `/flywheel:plan`" in Next Steps
-- Instead, immediately invoke `/flywheel:plan` using the Skill tool:
-
-```
-Use the Skill tool to invoke "flywheel:plan"
-```
-
-**If not in unattended mode:**
-- Show the standard "Run `/flywheel:plan`" message and stop
-
 ## Status Transition
 
 ```
