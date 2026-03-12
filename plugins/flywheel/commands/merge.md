@@ -25,7 +25,17 @@ gh pr list --json number,title,headRefName
 
 If no PRs found, report and skip to cleanup.
 
-### 2. Merge Each PR
+### 2. Disable Deploy Workflow
+
+When merging multiple PRs, each squash merge triggers a push to main. To avoid wasted CI runs (each cancelling the previous), disable the deploy workflow before merging:
+
+```bash
+gh workflow disable deploy.yml
+```
+
+If this fails (e.g., workflow not found), log a warning but continue — the merges will still work, just with the old cancel-and-restart behavior.
+
+### 3. Merge Each PR
 
 For each open PR, merge with squash and delete the remote branch.
 
@@ -41,7 +51,22 @@ gh pr merge $PR_NUMBER --squash --delete-branch
 
 Track success/failure in agent logic (not shell variables). Continue with remaining PRs even if one fails. Collect all results for the final report.
 
-### 3. Sync Local Main Branch
+### 4. Re-enable Deploy Workflow and Trigger Single Deploy
+
+After all merges are complete, re-enable the workflow and trigger a single deploy:
+
+```bash
+gh workflow enable deploy.yml
+```
+
+Then trigger a single deploy run (only if at least one PR was successfully merged):
+```bash
+gh workflow run deploy.yml
+```
+
+If either command fails, log a warning and report it. The user can manually trigger the deploy.
+
+### 5. Sync Local Main Branch
 
 After merging, sync the local main branch with remote. Run each as a separate Bash call:
 
@@ -57,7 +82,7 @@ git checkout main
 git pull origin main
 ```
 
-### 4. Clean Up Local Branches
+### 6. Clean Up Local Branches
 
 Delete any local branches that have been merged.
 
@@ -73,7 +98,7 @@ git branch -d $BRANCH
 
 If a delete fails, continue with the remaining branches.
 
-### 5. Clean Up Flywheel Artifacts
+### 7. Clean Up Flywheel Artifacts
 
 Remove any stray flywheel files. Run each as a separate Bash call (no echo suffixes):
 
@@ -110,7 +135,7 @@ Compare the two lists in agent logic. For each directory that is NOT in the git 
 rm -rf "$ORPHAN_DIR"
 ```
 
-### 6. Report Results
+### 8. Report Results
 
 ```markdown
 ## Merge Complete
@@ -120,6 +145,10 @@ rm -rf "$ORPHAN_DIR"
 
 ### PRs Failed (if any)
 - [List of PRs that failed to merge with reason]
+
+### Deploy
+- Workflow disabled during merges, re-enabled after
+- Single deploy triggered via workflow_dispatch
 
 ### Local Sync
 - Branch: main
