@@ -61,6 +61,7 @@ Create file at: `$FLYWHEEL_PATH/work/[TODAY]-[short-description].md`
 - priority: [low|medium|high|critical]
 - created: [TODAY]
 - status: new
+- source: cli
 - type: [code|research|writing|browser|organize|manual|ops] (omit if not specified)
 - effort: [low|medium|high] (omit - set by /flywheel:define)
 - unattended: true
