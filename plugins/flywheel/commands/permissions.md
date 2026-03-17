@@ -7,36 +7,38 @@ Read collected permission request logs, derive well-scoped permission entries, a
 
 ## Process
 
-### 1. Read the Permission Log
+### 1. Fetch the Permission Log
 
-```bash
-LOG_FILE="$HOME/.flywheel/permissions/permission-requests.jsonl"
+Fetch recent permission request events from the Flywheel cloud API:
+
+```
+WebFetch(url="https://www.flywheelgsd.com/api/permissions/log")
 ```
 
-Read `~/.flywheel/permissions/permission-requests.jsonl`. Each line is a JSON object with:
+If the request fails or returns a non-200 status, report "Could not reach the Flywheel API at https://www.flywheelgsd.com/api/permissions/log — check your connection." and stop.
+
+The response is a JSON array of event objects, each with:
 - `timestamp`: when the request occurred
-- `tool`: the tool name (Bash, Read, Edit, Write, WebFetch, etc.)
-- `input`: the tool input object
+- `toolName`: the tool name (Bash, Read, Edit, Write, WebFetch, etc.)
+- `toolInput`: the tool input object
 - `cwd`: working directory where the request happened
 - `project`: project directory name
-- `session_id`: Claude session ID
-- `raw_path`: full filesystem path
-- `base_repo_path`: normalized repo name (worktree-aware)
+- `sessionName`: Claude session name
 
-If the file doesn't exist or is empty, report "No permission requests logged yet." and stop.
+If the response is an empty array, report "No permission requests found." and stop.
 
 ### 2. Derive Permission Strings
 
 For each log entry, derive a Claude Code permission string using these rules:
 
 **Bash tool:**
-- Extract the command from `input.command`
+- Extract the command from `toolInput.command`
 - Use the first word (or first two words for compound commands like `git status`) as the prefix
 - Format: `Bash(prefix:*)`
 - Examples: `npm run build` → `Bash(npm run build:*)`, `git status` → `Bash(git status:*)`
 
 **Read tool:**
-- Extract the file path from `input.file_path`
+- Extract the file path from `toolInput.file_path`
 - Replace the specific file with `**` at the directory level
 - Use `~/` prefix where possible (replace `/Users/<username>/` with `~/`)
 - Format: `Read(~/path/to/dir/**)`
@@ -50,7 +52,7 @@ For each log entry, derive a Claude Code permission string using these rules:
 - Format: `Write(~/path/to/dir/**)`
 
 **WebFetch tool:**
-- Extract the URL from `input.url`
+- Extract the URL from `toolInput.url`
 - Derive the domain
 - Format: `WebFetch(domain:example.com)`
 
@@ -58,7 +60,7 @@ For each log entry, derive a Claude Code permission string using these rules:
 - Format: `WebSearch`
 
 **Skill tool:**
-- Extract skill name from `input.skill`
+- Extract skill name from `toolInput.skill`
 - Format: `Skill(skill-name)`
 
 **Other tools:**
@@ -149,18 +151,6 @@ If confirmed:
 3. Add the new entries to `permissions.allow`
 4. Write the file back with proper formatting (2-space indent)
 5. **If Global scope**: also write the same entries to all 3 area settings files (`~/.claude-personal/settings.local.json`, `~/.claude-bellwether/settings.local.json`, `~/.claude-sophia/settings.local.json`), preserving existing area-specific rules
-
-### 8. Optionally Clear Log
-
-After writing, ask:
-
-```
-Clear processed entries from the permission log?
-1. Yes, clear all
-2. No, keep them
-```
-
-If yes, truncate the JSONL file (write empty string).
 
 ## Important Notes
 
