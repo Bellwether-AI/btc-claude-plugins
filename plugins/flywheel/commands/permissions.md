@@ -9,13 +9,17 @@ Read collected permission request logs, derive well-scoped permission entries, a
 
 ### 1. Fetch the Permission Log
 
-Fetch recent permission request events from the Flywheel cloud API:
+Fetch recent permission request events from the Flywheel cloud API. The API requires a Bearer token for authentication.
 
-```
-WebFetch(url="https://www.flywheelgsd.com/api/permissions/log")
+**Get the token:**
+Read the file `~/.flywheel/agent.json` and extract the `deviceToken` field. If the file doesn't exist or has no `deviceToken`, report "No agent token found at ~/.flywheel/agent.json — run the agent first to register a device." and stop.
+
+**Fetch the log:**
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" https://www.flywheelgsd.com/api/permissions/log
 ```
 
-If the request fails or returns a non-200 status, report "Could not reach the Flywheel API at https://www.flywheelgsd.com/api/permissions/log — check your connection." and stop.
+If the request fails or returns a non-200 status, report "Could not reach the Flywheel API at https://www.flywheelgsd.com/api/permissions/log — check your connection or token." and stop.
 
 The response is a JSON array of event objects, each with:
 - `timestamp`: when the request occurred
