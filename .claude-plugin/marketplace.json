@@ -9,7 +9,7 @@
       "name": "flywheel",
       "source": "./plugins/flywheel",
       "description": "Flywheel work item management — orchestrate, plan, and execute tasks",
-      "version": "1.3.0"
+      "version": "1.3.1"
     }
   ]
 }
