@@ -144,6 +144,8 @@ This produces files like:
 
 ## Unattended Mode
 
-New work items default to `- unattended: true`. This means after creation, the work item automatically proceeds through the full workflow (`/flywheel:define` → `/flywheel:plan` → `/flywheel:execute`) without pausing for user input between steps. Execution still stops at `review` status for human verification before shipping.
+New work items default to `- unattended: true`. This means after creation, the work item automatically proceeds through the full workflow (`/flywheel:define` → `/flywheel:plan` → `/flywheel:execute`) without pausing for user input between steps.
 
-Set `- unattended: false` if you want manual control, requiring the user to explicitly invoke each step.
+**IMPORTANT:** Unattended mode is NOT fully autonomous. Execution stops at `review` status for human verification before shipping. The user always reviews changes before they are committed and pushed. This is a safety guardrail — `unattended: true` is safe to use for all work items.
+
+Set `- unattended: false` only if you want manual control, requiring the user to explicitly invoke each step. This is rarely needed.
