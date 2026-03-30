@@ -10,6 +10,12 @@
       "source": "./plugins/flywheel",
       "description": "Flywheel work item management — orchestrate, plan, and execute tasks",
       "version": "1.4.0"
+    },
+    {
+      "name": "co-dwerker",
+      "source": "./plugins/co-dwerker",
+      "description": "Structured daily development workflow — standup, GitHub Projects roadmap, autonomous execution, docs, and session continuity",
+      "version": "0.1.0"
     }
   ]
 }
