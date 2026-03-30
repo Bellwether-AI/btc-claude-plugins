@@ -21,7 +21,12 @@ STATE_FILE=".co-dwerker.state.json"
 CONFIG_FILE=".co-dwerker.json"
 REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
 REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
+# Assumes HTTPS or git@github.com SSH remote format
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+# Match the auto-memory directory convention used by Claude Code.
+# The exact path varies by platform — check for existing memory files first:
+#   ls ~/.claude/projects/*/memory/MEMORY.md
+# Use the matching directory. If none exists, derive from project root.
 MEMORY_DIR="$HOME/.claude/projects/$(echo $PROJECT_ROOT | sed 's|[/:\\]|-|g')/memory"
 ```
 
@@ -143,6 +148,8 @@ Save non-obvious learnings to Claude's built-in memory system. These persist acr
 
 Only save memories that will be useful in future sessions. Don't save things derivable from code, git history, or existing documentation.
 
+**Mechanism:** Claude's built-in memory system uses the `Write` tool to create files in the auto-memory directory (`~/.claude/projects/.../memory/`) with YAML frontmatter containing `name`, `description`, and `type` fields. State the key learnings explicitly in conversation context so they persist via Claude's implicit memory as well.
+
 ### 6. Update Project Status Files
 
 **`.co-dwerker.json`** — Create if it doesn't exist (first session), update if changed:
@@ -166,7 +173,9 @@ If the user says no or skips, write `null` for both fields.
 
 ### 7. Save Full Session to Episodic Memory
 
-Invoke the `episodic-memory` plugin to record the full session. This is the richest context store and enables future sessions to search for specific decisions and outcomes.
+The episodic-memory plugin automatically captures conversation history. To ensure this session is searchable and useful in future sessions, explicitly state a structured session summary in the conversation before ending. This makes the session discoverable via `episodic-memory:search-conversations`.
+
+Format the summary as a clear text block in conversation (not a file write) so the episodic memory system indexes it:
 
 The session record should include:
 - **Project:** repository name and project board title

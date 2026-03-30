@@ -6,7 +6,7 @@ Structured daily development workflow plugin for Claude Code. Orchestrates a ful
 
 | Command | Description |
 |---------|-------------|
-| `/co-dwerker:work-bellwether-project` | Start a work session — standup, brainstorm, execute, docs, close |
+| `/co-dwerker:work-bellwether-project` | Full workflow session — resume, project select, standup, brainstorm, execute, docs, close, next |
 | `/co-dwerker:exit` | Wind down the session — save state across all memory systems |
 
 ## Workflow
@@ -21,7 +21,7 @@ Resume Check → Project Select → Standup → Brainstorm → Execute → Docs 
 2. **Project Select** — Confirm which GitHub Project board to work from
 3. **Standup** — Read the board, present status, recommend today's issues
 4. **Brainstorm** — Collaborative design for the active issue (invokes `superpowers:brainstorming`)
-5. **Execute** — Autonomous implementation: plan → isolate → implement → verify → PR → review
+5. **Execute** — Autonomous implementation: plan → isolate → implement → verify → changelog → PR → review → iterate
 6. **Docs** — Update companion documentation repo (if configured)
 7. **Close** — Merge PRs, verify CI, clean up branches
 8. **Next** — Loop to next issue or exit
@@ -30,10 +30,10 @@ Resume Check → Project Select → Standup → Brainstorm → Execute → Docs 
 
 These plugins/skills must be installed separately:
 
-- **superpowers** — brainstorming, writing-plans, executing-plans, verification, git worktrees
-- **pr-review-toolkit** — automated PR review
-- **commit-commands** — standardized commits
-- **episodic-memory** — session history recall
+- **superpowers** — `superpowers:brainstorming`, `superpowers:writing-plans`, `superpowers:executing-plans` (or `superpowers:subagent-driven-development`), `superpowers:verification-before-completion`, `superpowers:using-git-worktrees`
+- **pr-review-toolkit** — `pr-review-toolkit:review-pr`
+- **commit-commands** — `commit-commands:commit`
+- **episodic-memory** — `episodic-memory:search-conversations`
 
 ## Per-Project Configuration
 

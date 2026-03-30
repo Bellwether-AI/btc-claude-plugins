@@ -12,7 +12,7 @@ Run a structured daily development session on a Bellwether project. This skill o
 - `superpowers:writing-plans`
 - `superpowers:executing-plans` or `superpowers:subagent-driven-development`
 - `superpowers:verification-before-completion`
-- `superpowers:finishing-a-development-branch`
+- `superpowers:using-git-worktrees`
 - `pr-review-toolkit:review-pr`
 - `commit-commands:commit`
 - `episodic-memory:search-conversations`
@@ -24,6 +24,7 @@ TODAY=$(date +%Y-%m-%d)
 STATE_FILE=".co-dwerker.state.json"
 CONFIG_FILE=".co-dwerker.json"
 REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
+# Assumes HTTPS or git@github.com SSH remote format
 REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
 ```
 
@@ -36,12 +37,17 @@ Before starting fresh, check for prior session state.
 ### 1. Read Local State
 
 Use `Read` to check if `$STATE_FILE` exists in the project root. If it does, parse the JSON for:
+- `github_project_number` — the project board used
+- `github_project_title` — project board display name
+- `planned_issues` — the remaining work queue
 - `last_session.date` — when the last session was
 - `last_session.current_issue` — issue number in progress
 - `last_session.current_phase` — which phase was active
 - `last_session.branch` — branch name
-- `planned_issues` — the remaining work queue
-- `github_project_number` — the project board used
+- `last_session.worktree` — worktree path (avoid creating duplicates)
+- `last_session.completed_issues` — what was finished last time
+- `last_session.prs_created` — PRs opened last session
+- `last_session.prs_merged` — PRs merged last session
 
 ### 2. Search Episodic Memory
 
@@ -107,7 +113,17 @@ PROJECT_NUMBER=<selected>
 PROJECT_TITLE="<selected title>"
 ```
 
-### 4. Load Project Fields
+### 4. Fetch Project Node ID
+
+The `gh project item-edit` command requires the GraphQL node ID, not the project number. Fetch it now:
+
+```bash
+PROJECT_ID=$(gh project view $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --jq '.id')
+```
+
+Store `PROJECT_ID` for all board update operations throughout the session.
+
+### 5. Load Project Fields
 
 ```bash
 gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json
@@ -178,7 +194,15 @@ Use `AskUserQuestion`:
 
 > "Here's my recommendation for today: #$A (P1), #$B (P1), #$C (P2). Which issues do you want to work on today, and in what order?"
 
-The user's response defines the ordered work queue. The first item becomes the **active issue**.
+Store the user's response as the ordered work queue:
+
+```
+PLANNED_ISSUES=[<ordered issue numbers>]
+ACTIVE_ISSUE=<first issue number>
+ISSUE_NUMBER=$ACTIVE_ISSUE
+```
+
+The first item becomes the **active issue**. Track `PLANNED_ISSUES` throughout the session — the exit skill writes it to the state file.
 
 ---
 
@@ -215,12 +239,14 @@ Follow the brainstorming skill's complete flow. Do not shortcut it.
 After design is approved, update the project board item to "In Progress":
 
 ```bash
-# Find the item ID for this issue
-ITEM_ID=$(gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json | jq -r '.items[] | select(.content.number == '$ISSUE_NUMBER') | .id')
+# Find the item ID for this issue (cache for reuse in later phases)
+ITEM_ID=$(gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json | jq -r '.items[] | select(.content.number? == '$ISSUE_NUMBER') | .id')
 
 # Update status to "In Progress"
 gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_IN_PROGRESS_ID
 ```
+
+Cache `$ITEM_ID` — it is reused in Phase 3 (step 9) and Phase 5 (step 5) for board updates.
 
 ### GATE: Design Approval
 
