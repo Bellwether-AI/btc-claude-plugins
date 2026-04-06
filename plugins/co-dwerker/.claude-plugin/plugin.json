@@ -1,7 +1,7 @@
 {
   "name": "co-dwerker",
-  "version": "0.1.0",
-  "description": "Structured daily development workflow — standup, GitHub Projects roadmap, autonomous execution, docs, and session continuity",
+  "version": "0.2.0",
+  "description": "Structured daily development workflow for any GitHub repo. Supports repo mode (GitHub Issues with priority labels) and project mode (GitHub Projects board). Use this skill when starting a work session, doing a standup, working issues, creating issues mid-session, or running an issue-to-merge development cycle. Covers standup, brainstorm, execute, docs, close, and session continuity.",
   "author": {
     "name": "Bellwether AI"
   }

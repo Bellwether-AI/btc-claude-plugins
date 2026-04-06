@@ -37,6 +37,7 @@ MEMORY_DIR="$HOME/.claude/projects/$(echo $PROJECT_ROOT | sed 's|[/:\\]|-|g')/me
 Before persisting anything, collect the facts about this session:
 
 - **Issues completed:** Which issues moved to "Done" this session
+- **Issues created:** New issues created via `/co-dwerker:new-issue` this session
 - **Issues in progress:** Current active issue, what phase it's in
 - **PRs created:** PR numbers and URLs from this session
 - **PRs merged:** Which PRs were merged this session
@@ -51,8 +52,10 @@ Write the state file to the project root:
 
 ```json
 {
-  "github_project_number": <number>,
-  "github_project_title": "<title>",
+  "work_mode": "repo or project",
+  "repo_owner_name": "owner/repo",
+  "github_project_number": null or number,
+  "github_project_title": null or "title string",
   "planned_issues": [<remaining issue numbers>],
   "last_session": {
     "date": "$TODAY",
@@ -62,10 +65,17 @@ Write the state file to the project root:
     "branch": "<active branch name or null>",
     "worktree": "<worktree path or null>",
     "prs_created": [<PR numbers>],
-    "prs_merged": [<PR numbers>]
+    "prs_merged": [<PR numbers>],
+    "issues_created": [<issue numbers created this session>]
   }
 }
 ```
+
+Notes:
+- `work_mode` persists across sessions so the user doesn't have to re-select each time
+- `repo_owner_name` is stored for display in the resume prompt
+- `github_project_number` and `github_project_title` are null when `work_mode == "repo"`
+- `issues_created` tracks issues created via `/co-dwerker:new-issue` during this session
 
 This file should be gitignored. If `.gitignore` doesn't already exclude it, add the entry:
 
@@ -73,18 +83,20 @@ This file should be gitignored. If `.gitignore` doesn't already exclude it, add 
 echo ".co-dwerker.state.json" >> .gitignore
 ```
 
-### 3. Update GitHub Project Board
+### 3. Update GitHub Project Board (project mode only)
 
-Verify board items reflect current reality:
+**Skip this step if `work_mode == "repo"`.**
+
+If `work_mode == "project"`, verify board items reflect current reality:
 
 ```bash
 gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --limit 100
 ```
 
 For each issue worked on this session:
-- Completed issues → confirm status is "Done"
-- Issues mid-work → confirm status is "In Progress" (not accidentally reset)
-- Issues with PRs ready → confirm status is "In Review"
+- Completed issues --> confirm status is "Done"
+- Issues mid-work --> confirm status is "In Progress" (not accidentally reset)
+- Issues with PRs ready --> confirm status is "In Review"
 
 Do not change statuses that are already correct. Only fix discrepancies.
 
@@ -215,13 +227,16 @@ git stash list
 
 Format a clear summary for the user:
 
-> **Session Summary — $TODAY**
+> **Session Summary -- $TODAY** ($WORK_MODE mode on $REPO_OWNER_NAME)
 >
 > **Completed:**
 > - Issue #$N: $TITLE (PR #$PR merged)
 >
+> **Created:**
+> - Issue #$N: $TITLE (priority / status)
+>
 > **In Progress:**
-> - Issue #$N: $TITLE — Phase $PHASE (branch `$BRANCH`)
+> - Issue #$N: $TITLE -- Phase $PHASE (branch `$BRANCH`)
 >   - Next step: <what to do when resuming>
 >
 > **Tomorrow's Starting Point:**
