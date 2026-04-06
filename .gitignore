@@ -9,3 +9,4 @@ dist/
 .cache/
 .claude/
 .flywheel-prompt-*.txt
+.co-dwerker.state.json

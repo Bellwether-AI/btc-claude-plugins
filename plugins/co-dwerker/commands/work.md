@@ -1,5 +1,5 @@
 ---
-description: Start a structured work session -- standup, brainstorm, execute, docs, close
+description: Start or resume a structured work session -- daily standup, issue triage, brainstorm, implement, review, merge, docs, and session continuity. Use when starting work, resuming work, doing standup, picking issues, or running a full issue-to-merge development cycle.
 ---
 # Co-Dwerker: Work
 
@@ -32,6 +32,10 @@ REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
 # Assumes HTTPS or git@github.com SSH remote format
 REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
 ```
+
+**GitHub hosting required:** If the remote URL does not contain `github.com`, stop and tell the user: "co-dwerker requires a GitHub-hosted repository. The origin remote does not appear to be on github.com." All subsequent `gh` CLI commands depend on a valid GitHub remote.
+
+**Error handling:** If any `gh` CLI command fails during the session, report the error to the user and ask how to proceed rather than silently continuing. Common causes: missing auth (`gh auth login`), insufficient project board permissions, or rate limiting.
 
 ---
 
@@ -506,7 +510,8 @@ Write documentation in the configured `$DOCS_PATH`. Follow the existing document
 
 ```bash
 cd "../$(basename $DOCS_REPO)"
-git add -A
+# Stage only the specific files that were created or modified -- avoid git add -A
+git add <specific doc files changed>
 git commit -m "docs: update documentation for $REPO_OWNER_NAME#$ISSUE_NUMBER"
 git push -u origin "docs/$ISSUE_NUMBER-<short-description>"
 gh pr create --title "docs: <description>" --body "$(cat <<'EOF'
@@ -644,106 +649,6 @@ At any point in the Next phase, the user can:
 
 ---
 
-## GitHub Project Board Setup
+## First-Run Setup
 
-On first run in project mode, if the project board is missing expected fields, offer to create them.
-
-### Required Fields
-
-| Field | Type | Options |
-|-------|------|---------|
-| Status | Single select | Backlog, Ready, In Progress, In Review, Done |
-| Priority | Single select | P0-Critical, P1-High, P2-Medium, P3-Low |
-
-### Optional Fields
-
-These are used if present but not required:
-- **Sprint** — iteration field for grouping work by time period
-- **Agent** — single select for categorizing by agent/component
-- **Docs PR** — text field for linking companion documentation PRs
-
-### Creating Missing Fields
-
-When a required field is missing, create it AND populate its option values:
-
-```bash
-# Create Status field
-gh project field-create $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" \
-  --name "Status" --data-type "SINGLE_SELECT"
-```
-
-After creating the field, fetch its ID from the field list, then add each option value. Use the GitHub GraphQL API since `gh project` CLI may not support adding options directly:
-
-```bash
-# Fetch the newly created field ID
-STATUS_FIELD_ID=$(gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json \
-  | jq -r '.fields[] | select(.name == "Status") | .id')
-
-# Add option values via GraphQL
-gh api graphql -f query='
-  mutation {
-    updateProjectV2Field(input: {
-      projectId: "'$PROJECT_ID'"
-      fieldId: "'$STATUS_FIELD_ID'"
-      singleSelectOptions: [
-        {name: "Backlog", color: GRAY}
-        {name: "Ready", color: BLUE}
-        {name: "In Progress", color: YELLOW}
-        {name: "In Review", color: ORANGE}
-        {name: "Done", color: GREEN}
-      ]
-    }) {
-      projectV2Field { ... on ProjectV2SingleSelectField { id } }
-    }
-  }
-'
-```
-
-Repeat for Priority:
-
-```bash
-# Create Priority field
-gh project field-create $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" \
-  --name "Priority" --data-type "SINGLE_SELECT"
-
-# Fetch field ID
-PRIORITY_FIELD_ID=$(gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json \
-  | jq -r '.fields[] | select(.name == "Priority") | .id')
-
-# Add option values via GraphQL
-gh api graphql -f query='
-  mutation {
-    updateProjectV2Field(input: {
-      projectId: "'$PROJECT_ID'"
-      fieldId: "'$PRIORITY_FIELD_ID'"
-      singleSelectOptions: [
-        {name: "P0-Critical", color: RED}
-        {name: "P1-High", color: ORANGE}
-        {name: "P2-Medium", color: YELLOW}
-        {name: "P3-Low", color: BLUE}
-      ]
-    }) {
-      projectV2Field { ... on ProjectV2SingleSelectField { id } }
-    }
-  }
-'
-```
-
-After creating fields and options, re-fetch the field list to populate all field IDs and option IDs for the session.
-
-### Ensuring Priority Labels Exist (both modes)
-
-In repo mode, priority is tracked via GitHub labels. On first run, check that the repo has the expected priority labels:
-
-```bash
-gh label list --repo "$REPO_OWNER_NAME" --json name --jq '.[].name' | grep -c "^P[0-3]"
-```
-
-If any are missing, create them:
-
-```bash
-gh label create "P0-Critical" --repo "$REPO_OWNER_NAME" --color "B60205" --description "Critical priority" 2>/dev/null
-gh label create "P1-High" --repo "$REPO_OWNER_NAME" --color "D93F0B" --description "High priority" 2>/dev/null
-gh label create "P2-Medium" --repo "$REPO_OWNER_NAME" --color "FBCA04" --description "Medium priority" 2>/dev/null
-gh label create "P3-Low" --repo "$REPO_OWNER_NAME" --color "0E8A16" --description "Low priority" 2>/dev/null
-```
+For project board field creation (project mode) and priority label creation (both modes), read and follow `references/setup-project-board.md`.

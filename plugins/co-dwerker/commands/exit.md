@@ -1,5 +1,5 @@
 ---
-description: Wind down the current work session — save state across all memory systems, update docs, write summary
+description: Wind down and save the current work session -- persist state, update project board, save memories, write summary. Use when done for the day, wrapping up, stopping work, or ending a session.
 ---
 # Co-Dwerker: Exit
 
@@ -140,27 +140,29 @@ type: project
 
 Update the `MEMORY.md` index file if a new memory file was created.
 
-### 5. Update Claude Built-in Memories
+### 5. Save Session Learnings to Auto-Memory
 
-Save non-obvious learnings to Claude's built-in memory system. These persist across ALL future Claude Code sessions, not just this project.
+Save non-obvious learnings as markdown files in the auto-memory directory (`$MEMORY_DIR`). These files persist across all future Claude Code sessions for this project.
 
-**Project memories** (save if applicable):
+Use the `Write` tool to create files in `$MEMORY_DIR/` with YAML frontmatter containing `name`, `description`, and `type` fields. Update `$MEMORY_DIR/MEMORY.md` if adding new files.
+
+**Project memories** (type: project, save if applicable):
 - Current work state: active issue, branch, phase
 - Important deadlines or blockers discovered
 - Dependencies between issues that aren't obvious from the board
 
-**Feedback memories** (save if applicable):
+**Feedback memories** (type: feedback, save if applicable):
 - Workflow adjustments the user requested during this session
 - Approaches that worked well or poorly
 - Tool/skill usage patterns to repeat or avoid
 
-**Reference memories** (save if applicable):
+**Reference memories** (type: reference, save if applicable):
 - External resources discovered (URLs, dashboards, docs)
 - API endpoints or service locations learned
 
 Only save memories that will be useful in future sessions. Don't save things derivable from code, git history, or existing documentation.
 
-**Mechanism:** Claude's built-in memory system uses the `Write` tool to create files in the auto-memory directory (`~/.claude/projects/.../memory/`) with YAML frontmatter containing `name`, `description`, and `type` fields. State the key learnings explicitly in conversation context so they persist via Claude's implicit memory as well.
+Also state key learnings explicitly in the conversation text so they are captured by episodic memory (Step 7).
 
 ### 6. Update Project Status Files
 
