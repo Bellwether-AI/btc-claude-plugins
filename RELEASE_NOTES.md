@@ -1,0 +1,33 @@
+# Release Notes
+
+## co-dwerker v0.2.0
+
+### What's New
+
+**Work any GitHub repo, not just ones with project boards.** The new `/co-dwerker:work` command now asks whether you want to work in **repo mode** (just GitHub Issues) or **project mode** (GitHub Projects board). Your choice is remembered per folder so you only pick once.
+
+**Create issues on the fly.** Use `/co-dwerker:new-issue` at any time to create a GitHub Issue. During brainstorm and execution phases, the plugin also proactively asks if newly discovered bugs or tasks should be filed as issues. In project mode, new issues are automatically added to the board with your chosen priority and status.
+
+**Priority labels everywhere.** In repo mode, issues are sorted by P0-P3 priority labels (created automatically if missing). In project mode, priority labels are also applied to issues to keep everything in sync.
+
+### Behavior Changes
+
+- `/co-dwerker:work-bellwether-project` is deprecated -- use `/co-dwerker:work` instead (the old command shows a redirect).
+- The standup format differs by mode: project mode shows the board view, repo mode shows issues grouped by priority labels and milestones.
+- Board update steps (In Progress, In Review, Done) are skipped entirely in repo mode.
+- The plugin now validates that the repo is GitHub-hosted before starting.
+
+### Bug Fixes
+
+- Fixed: Creating project board fields (Status, Priority) now properly populates the dropdown option values.
+- Fixed: Priority labels are now applied in both repo and project mode when creating issues.
+- Fixed: Upgrading from v0.1.0 state files no longer silently assumes project mode -- you'll be asked to choose.
+
+### Known Issues
+
+- `work.md` is 654 lines (above the 500-line skill guideline). The setup section has been extracted to a reference file but the core workflow phases are inherently long. May benefit from further extraction in a future version.
+- The `REPO_OWNER_NAME` derivation only supports GitHub.com remotes (not GitHub Enterprise or other hosts).
+
+## co-dwerker v0.1.0
+
+Initial release with structured daily development workflow, GitHub Projects integration, and 6-layer session persistence.
