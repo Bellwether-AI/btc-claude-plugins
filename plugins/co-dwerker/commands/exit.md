@@ -1,5 +1,5 @@
 ---
-description: Wind down the current work session — save state across all memory systems, update docs, write summary
+description: Wind down and save the current work session -- persist state, update project board, save memories, write summary. Use when done for the day, wrapping up, stopping work, or ending a session.
 ---
 # Co-Dwerker: Exit
 
@@ -37,6 +37,7 @@ MEMORY_DIR="$HOME/.claude/projects/$(echo $PROJECT_ROOT | sed 's|[/:\\]|-|g')/me
 Before persisting anything, collect the facts about this session:
 
 - **Issues completed:** Which issues moved to "Done" this session
+- **Issues created:** New issues created via `/co-dwerker:new-issue` this session
 - **Issues in progress:** Current active issue, what phase it's in
 - **PRs created:** PR numbers and URLs from this session
 - **PRs merged:** Which PRs were merged this session
@@ -51,8 +52,10 @@ Write the state file to the project root:
 
 ```json
 {
-  "github_project_number": <number>,
-  "github_project_title": "<title>",
+  "work_mode": "repo or project",
+  "repo_owner_name": "owner/repo",
+  "github_project_number": null or number,
+  "github_project_title": null or "title string",
   "planned_issues": [<remaining issue numbers>],
   "last_session": {
     "date": "$TODAY",
@@ -62,10 +65,17 @@ Write the state file to the project root:
     "branch": "<active branch name or null>",
     "worktree": "<worktree path or null>",
     "prs_created": [<PR numbers>],
-    "prs_merged": [<PR numbers>]
+    "prs_merged": [<PR numbers>],
+    "issues_created": [<issue numbers created this session>]
   }
 }
 ```
+
+Notes:
+- `work_mode` persists across sessions so the user doesn't have to re-select each time
+- `repo_owner_name` is stored for display in the resume prompt
+- `github_project_number` and `github_project_title` are null when `work_mode == "repo"`
+- `issues_created` tracks issues created via `/co-dwerker:new-issue` during this session
 
 This file should be gitignored. If `.gitignore` doesn't already exclude it, add the entry:
 
@@ -73,18 +83,20 @@ This file should be gitignored. If `.gitignore` doesn't already exclude it, add 
 echo ".co-dwerker.state.json" >> .gitignore
 ```
 
-### 3. Update GitHub Project Board
+### 3. Update GitHub Project Board (project mode only)
 
-Verify board items reflect current reality:
+**Skip this step if `work_mode == "repo"`.**
+
+If `work_mode == "project"`, verify board items reflect current reality:
 
 ```bash
 gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --limit 100
 ```
 
 For each issue worked on this session:
-- Completed issues → confirm status is "Done"
-- Issues mid-work → confirm status is "In Progress" (not accidentally reset)
-- Issues with PRs ready → confirm status is "In Review"
+- Completed issues --> confirm status is "Done"
+- Issues mid-work --> confirm status is "In Progress" (not accidentally reset)
+- Issues with PRs ready --> confirm status is "In Review"
 
 Do not change statuses that are already correct. Only fix discrepancies.
 
@@ -128,27 +140,29 @@ type: project
 
 Update the `MEMORY.md` index file if a new memory file was created.
 
-### 5. Update Claude Built-in Memories
+### 5. Save Session Learnings to Auto-Memory
 
-Save non-obvious learnings to Claude's built-in memory system. These persist across ALL future Claude Code sessions, not just this project.
+Save non-obvious learnings as markdown files in the auto-memory directory (`$MEMORY_DIR`). These files persist across all future Claude Code sessions for this project.
 
-**Project memories** (save if applicable):
+Use the `Write` tool to create files in `$MEMORY_DIR/` with YAML frontmatter containing `name`, `description`, and `type` fields. Update `$MEMORY_DIR/MEMORY.md` if adding new files.
+
+**Project memories** (type: project, save if applicable):
 - Current work state: active issue, branch, phase
 - Important deadlines or blockers discovered
 - Dependencies between issues that aren't obvious from the board
 
-**Feedback memories** (save if applicable):
+**Feedback memories** (type: feedback, save if applicable):
 - Workflow adjustments the user requested during this session
 - Approaches that worked well or poorly
 - Tool/skill usage patterns to repeat or avoid
 
-**Reference memories** (save if applicable):
+**Reference memories** (type: reference, save if applicable):
 - External resources discovered (URLs, dashboards, docs)
 - API endpoints or service locations learned
 
 Only save memories that will be useful in future sessions. Don't save things derivable from code, git history, or existing documentation.
 
-**Mechanism:** Claude's built-in memory system uses the `Write` tool to create files in the auto-memory directory (`~/.claude/projects/.../memory/`) with YAML frontmatter containing `name`, `description`, and `type` fields. State the key learnings explicitly in conversation context so they persist via Claude's implicit memory as well.
+Also state key learnings explicitly in the conversation text so they are captured by episodic memory (Step 7).
 
 ### 6. Update Project Status Files
 
@@ -215,13 +229,16 @@ git stash list
 
 Format a clear summary for the user:
 
-> **Session Summary — $TODAY**
+> **Session Summary -- $TODAY** ($WORK_MODE mode on $REPO_OWNER_NAME)
 >
 > **Completed:**
 > - Issue #$N: $TITLE (PR #$PR merged)
 >
+> **Created:**
+> - Issue #$N: $TITLE (priority / status)
+>
 > **In Progress:**
-> - Issue #$N: $TITLE — Phase $PHASE (branch `$BRANCH`)
+> - Issue #$N: $TITLE -- Phase $PHASE (branch `$BRANCH`)
 >   - Next step: <what to do when resuming>
 >
 > **Tomorrow's Starting Point:**
