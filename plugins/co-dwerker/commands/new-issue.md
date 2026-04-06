@@ -53,15 +53,29 @@ Present the draft issue to the user for confirmation before creating it:
 
 ---
 
-## Step 2: Create the Issue
+## Step 2: Ask for Priority (both modes)
+
+Priority is always assigned, regardless of work mode. Use `AskUserQuestion`:
+
+> "What priority for this issue?"
+>
+> **P0-Critical** / **P1-High** / **P2-Medium** (default) / **P3-Low**
+
+Store the selected priority label (e.g., `P2-Medium`).
+
+---
+
+## Step 3: Create the Issue
 
 ```bash
 gh issue create --repo "$REPO_OWNER_NAME" \
   --title "<title>" \
   --body "<body>" \
-  --label "<label1>,<label2>" \
+  --label "<label1>" --label "<priority-label>" \
   --assignee "@me"
 ```
+
+Use separate `--label` flags for each label (not comma-separated). Include the priority label from Step 2 alongside any category labels from Step 1.
 
 Capture the new issue number from the command output:
 
@@ -71,7 +85,7 @@ NEW_ISSUE_NUMBER=<number from gh output>
 
 ---
 
-## Step 3: Project Board Integration (project mode only)
+## Step 4: Project Board Integration (project mode only)
 
 Read the state file to check the current work mode:
 
@@ -79,30 +93,31 @@ Read the state file to check the current work mode:
 # Read .co-dwerker.state.json
 ```
 
-**If `work_mode` is not `"project"`, skip to Step 4.**
+**If `work_mode` is not `"project"`, skip to Step 5.**
 
-If `work_mode == "project"`, the issue should be added to the active project board.
+If `work_mode == "project"`, the issue should also be added to the active project board.
 
-### 3a. Load Project Context
+### 4a. Load Project Context
 
 Read from the state file:
-- `github_project_number` → `PROJECT_NUMBER`
+- `github_project_number` --> `PROJECT_NUMBER`
 - Fetch `PROJECT_ID` if not cached:
 
 ```bash
 PROJECT_ID=$(gh project view $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --jq '.id')
 ```
 
-### 3b. Ask for Priority and Status
+### 4b. Ask for Board Status
 
 Use `AskUserQuestion`:
 
-> "Adding to Project #$PROJECT_NUMBER. What priority and status?"
+> "Adding to Project #$PROJECT_NUMBER. What status?"
 >
-> **Priority:** P0-Critical / P1-High / P2-Medium (default) / P3-Low
-> **Status:** Backlog (default) / Ready / In Progress
+> **Backlog** (default) / **Ready** / **In Progress**
 
-### 3c. Add Issue to Project Board
+Priority was already selected in Step 2 -- reuse it for the board field.
+
+### 4c. Add Issue to Project Board
 
 ```bash
 # Add the issue to the project
@@ -110,7 +125,7 @@ gh project item-add $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" \
   --url "https://github.com/$REPO_OWNER_NAME/issues/$NEW_ISSUE_NUMBER"
 ```
 
-### 3d. Set Priority and Status Fields
+### 4d. Set Priority and Status Fields
 
 Fetch the project field IDs and option IDs (load from state cache if available, otherwise query):
 
@@ -147,19 +162,9 @@ gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID \
   --field-id $STATUS_FIELD_ID --single-select-option-id $SELECTED_STATUS_OPTION_ID
 ```
 
-### 3e. Also Apply Priority Label to Issue
-
-To keep repo-mode and project-mode in sync, add the priority as a label on the issue itself:
-
-```bash
-gh issue edit $NEW_ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --add-label "<priority-label>"
-```
-
-Where `<priority-label>` matches the selected priority (e.g., `P1-High`).
-
 ---
 
-## Step 4: Session Integration
+## Step 5: Session Integration
 
 If called during an active work session (state file has `last_session.date == $TODAY`):
 
@@ -169,11 +174,11 @@ Use `AskUserQuestion`:
 
 If yes, append `NEW_ISSUE_NUMBER` to the in-memory `PLANNED_ISSUES` list. The exit skill will persist this to the state file.
 
-If no, the issue stays in backlog / the status selected in Step 3.
+If no, the issue stays in backlog / the status selected in Step 4.
 
 ---
 
-## Step 5: Confirmation
+## Step 6: Confirmation
 
 Present the result:
 

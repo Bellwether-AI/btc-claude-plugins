@@ -42,7 +42,7 @@ Before starting fresh, check for prior session state.
 ### 1. Read Local State
 
 Use `Read` to check if `$STATE_FILE` exists in the project root. If it does, parse the JSON for:
-- `work_mode` — "repo" or "project" (default to "project" if missing for backward compat)
+- `work_mode` — "repo" or "project". If this field is missing (v0.1.0 state file), do NOT default it -- treat it as absent so Phase 0a presents the first-time selection prompt. This lets users who upgrade from v0.1.0 explicitly choose their mode.
 - `repo_owner_name` — the repo used last time (derive from git remote if missing)
 - `github_project_number` — the project board used (null in repo mode)
 - `github_project_title` — project board display name (null in repo mode)
@@ -233,6 +233,10 @@ Format the board state into these categories:
 ### Repo Mode Standup
 
 *Runs when `WORK_MODE == "repo"`.*
+
+#### 0. Ensure Priority Labels Exist
+
+Before fetching issues, verify that the repo has the expected priority labels. If any are missing, create them (see "Ensuring Priority Labels Exist" section at the end of this file). This only needs to run once per repo -- skip if labels were already confirmed in a prior session.
 
 #### 1. Fetch Issues
 

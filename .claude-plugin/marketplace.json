@@ -14,8 +14,8 @@
     {
       "name": "co-dwerker",
       "source": "./plugins/co-dwerker",
-      "description": "Structured daily development workflow — standup, GitHub Projects roadmap, autonomous execution, docs, and session continuity",
-      "version": "0.1.0"
+      "description": "Structured daily development workflow for any GitHub repo. Supports repo mode (GitHub Issues) and project mode (GitHub Projects board). Standup, brainstorm, execute, docs, close, and session continuity.",
+      "version": "0.2.0"
     }
   ]
 }
