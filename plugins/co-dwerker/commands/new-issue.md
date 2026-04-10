@@ -16,6 +16,10 @@ REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
 REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
 ```
 
+## Model Preference
+
+When dispatching subagents via the `Agent` tool during issue creation, always set `model: "opus"`. Never use `model: "haiku"`. Use `"sonnet"` as minimum fallback.
+
 ---
 
 ## Step 1: Gather Issue Details

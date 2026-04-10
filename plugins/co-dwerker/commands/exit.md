@@ -30,6 +30,10 @@ PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 MEMORY_DIR="$HOME/.claude/projects/$(echo $PROJECT_ROOT | sed 's|[/:\\]|-|g')/memory"
 ```
 
+## Model Preference
+
+When dispatching subagents via the `Agent` tool during exit, always set `model: "opus"`. Never use `model: "haiku"`. Use `"sonnet"` as minimum fallback.
+
 ## Process
 
 ### 1. Gather Session Summary
@@ -54,6 +58,7 @@ Write the state file to the project root:
 {
   "work_mode": "repo or project",
   "repo_owner_name": "owner/repo",
+  "repo_local_path": "/absolute/path/to/repo",
   "github_project_number": null or number,
   "github_project_title": null or "title string",
   "planned_issues": [<remaining issue numbers>],
@@ -74,6 +79,7 @@ Write the state file to the project root:
 Notes:
 - `work_mode` persists across sessions so the user doesn't have to re-select each time
 - `repo_owner_name` is stored for display in the resume prompt
+- `repo_local_path` is the absolute path to the repo on disk (from `git rev-parse --show-toplevel`). This enables `/co-dwerker:work` to navigate to the repo when launched from a different directory.
 - `github_project_number` and `github_project_title` are null when `work_mode == "repo"`
 - `issues_created` tracks issues created via `/co-dwerker:new-issue` during this session
 

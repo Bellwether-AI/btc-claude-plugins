@@ -10,6 +10,7 @@ Structured daily development workflow plugin for Claude Code. Orchestrates a ful
 | Command | Description |
 |---------|-------------|
 | `/co-dwerker:work` | Full workflow session -- mode select, standup, brainstorm, execute, docs, close, next |
+| `/co-dwerker:docs` | Create or update companion documentation for a PR or Issue (standalone or from workflow) |
 | `/co-dwerker:new-issue` | Create a GitHub Issue and optionally add it to the active project board |
 | `/co-dwerker:exit` | Wind down the session -- save state across all memory systems |
 | `/co-dwerker:work-bellwether-project` | *Deprecated* -- redirects to `/co-dwerker:work` |
@@ -36,12 +37,13 @@ Works from a GitHub Projects board (the original v0.1.0 behavior).
 ## Workflow
 
 ```
-Resume Check --> Mode Select --> Project Select* --> Standup --> Brainstorm --> Execute --> Docs --> Close --> Next
-                                                       ^                                                    |
-                                                       +----------------------- loop -----------------------+
+Resume Check --> Mode Select --> Project Select* --> Standup --> Brainstorm --> Execute --> Docs** --> Close --> Next
+                                                       ^                                                     |
+                                                       +------------------------ loop -----------------------+
 ```
 
 *Project Select only runs in project mode.
+**Docs can also be run standalone via `/co-dwerker:docs`.
 
 1. **Resume Check** -- Detect prior session state, offer to resume or start fresh
 2. **Mode Select** -- Choose repo mode or project mode (remembered per folder)
@@ -61,6 +63,10 @@ New issues can be created at any time during a session:
 - **Standalone** -- Via `/co-dwerker:new-issue` at any point
 
 In project mode, new issues are automatically added to the project board with user-selected priority and status. In both modes, priority labels are applied to the issue.
+
+## Model Preference
+
+co-dwerker is designed for the most capable model available. On session start, it recommends running `/model opus` if you're not already on it. All subagent dispatches via the Agent tool use `model: "opus"`. Haiku is never used.
 
 ## Prerequisites
 
@@ -95,6 +101,7 @@ Managed automatically by the exit skill. Contains session state for resume detec
 {
   "work_mode": "repo or project",
   "repo_owner_name": "owner/repo",
+  "repo_local_path": "/absolute/path/to/repo",
   "github_project_number": null,
   "github_project_title": null,
   "planned_issues": [],
@@ -114,6 +121,7 @@ Managed automatically by the exit skill. Contains session state for resume detec
 
 - `work_mode` persists across sessions (repo or project)
 - `repo_owner_name` stored for display in resume prompt
+- `repo_local_path` absolute path to repo on disk (enables launching from non-repo directories)
 - `github_project_number` / `github_project_title` are null in repo mode
 - `issues_created` tracks issues created via `/co-dwerker:new-issue`
 

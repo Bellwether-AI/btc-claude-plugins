@@ -28,14 +28,52 @@ The mode is remembered per project folder so you only choose once.
 TODAY=$(date +%Y-%m-%d)
 STATE_FILE=".co-dwerker.state.json"
 CONFIG_FILE=".co-dwerker.json"
-REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
-# Assumes HTTPS or git@github.com SSH remote format
-REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
 ```
 
-**GitHub hosting required:** If the remote URL does not contain `github.com`, stop and tell the user: "co-dwerker requires a GitHub-hosted repository. The origin remote does not appear to be on github.com." All subsequent `gh` CLI commands depend on a valid GitHub remote.
+### Repo Detection
+
+The current working directory may not be the target repo. This happens when co-dwerker is launched from a plugin marketplace folder, a home directory, or any other non-project location. Detect and confirm the repo before proceeding.
+
+1. **Check CWD for a git remote:**
+   ```bash
+   DETECTED_REMOTE=$(git remote get-url origin 2>/dev/null)
+   DETECTED_REPO=$(echo "$DETECTED_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
+   ```
+   If `git remote` fails (exit code non-zero), the CWD is not a git repo or has no remote.
+
+2. **Check state file for previous repo:**
+   Look for `$STATE_FILE` in the CWD. Parse it for `repo_owner_name` and `repo_local_path` if present. Store as `SAVED_REPO` and `SAVED_REPO_PATH`.
+
+3. **Determine the repo to use:**
+   - **CWD has a valid GitHub remote AND matches `SAVED_REPO` (or no saved repo):** use `DETECTED_REPO` silently. Set `REPO_OWNER_NAME=$DETECTED_REPO`.
+   - **CWD has a valid GitHub remote but does NOT match `SAVED_REPO`:** ask the user with `AskUserQuestion`:
+     > "The current directory is in the **$DETECTED_REPO** repo, but your last session was on **$SAVED_REPO**. Which repo do you want to work on?"
+   - **CWD is NOT a git repo but `SAVED_REPO_PATH` exists:** tell the user:
+     > "The current directory is not a git repo. Your last session was on **$SAVED_REPO** at `$SAVED_REPO_PATH`. Navigating there now."
+     Then `cd "$SAVED_REPO_PATH"` and re-derive the environment variables. If the saved path no longer exists, fall through to the next case.
+   - **CWD is NOT a git repo and no saved state:** ask the user with `AskUserQuestion`:
+     > "The current directory is not a git repo. Please provide the path to the repo you want to work on, or navigate there first."
+
+4. **Set final variables:**
+   ```bash
+   REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
+   REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
+   ```
+
+5. **GitHub hosting guard:** If `REPO_REMOTE` does not contain `github.com`, stop and tell the user: "co-dwerker requires a GitHub-hosted repository. The origin remote does not appear to be on github.com."
+
+   If `REPO_OWNER_NAME` is still empty after all steps, stop and tell the user: "Could not determine a GitHub repository. Please `cd` to a git repo with a GitHub remote, or provide the path."
 
 **Error handling:** If any `gh` CLI command fails during the session, report the error to the user and ask how to proceed rather than silently continuing. Common causes: missing auth (`gh auth login`), insufficient project board permissions, or rate limiting.
+
+## Model Preference
+
+co-dwerker performs best with the most capable model available.
+
+1. **Check and recommend:** At the start of every session, tell the user:
+   > "co-dwerker works best with the Opus model. If you're not already on it, run `/model opus` to switch."
+2. **Subagent dispatches:** When using the `Agent` tool during this workflow, always set `model: "opus"`.
+3. **Never use Haiku:** Per project policy, never dispatch subagents with `model: "haiku"`. Use `"opus"` as default, `"sonnet"` as minimum fallback.
 
 ---
 
@@ -462,85 +500,19 @@ Wait for user approval before proceeding to Phase 4.
 
 ## Phase 4: Docs
 
-Update user-facing documentation in the companion docs repo. This phase is autonomous after user approves the code PR.
+Update companion documentation. This phase delegates to the standalone `/co-dwerker:docs` command.
 
-### 1. Check Docs Config
+### Invoke Docs Command
 
-Read `$CONFIG_FILE` (`.co-dwerker.json`) for `docs_repo` and `docs_path`.
+Use the `Skill` tool to invoke `co-dwerker:docs`.
 
-If no config file exists or `docs_repo` is null/missing, skip this phase entirely and proceed to Phase 5.
+The current conversation already has `$ISSUE_NUMBER`, `$PR_NUMBER`, and `$REPO_OWNER_NAME` in context -- the docs command will detect this and skip its "identify the subject" prompt.
 
-### 2. Locate or Clone Docs Repo
-
-Check if the docs repo is already cloned locally:
-
-```bash
-# Check common sibling locations
-ls -d "../$(basename $DOCS_REPO)" 2>/dev/null
-ls -d "../../$(basename $DOCS_REPO)" 2>/dev/null
-```
-
-If not found, clone it:
-
-```bash
-gh repo clone "$DOCS_REPO" "../$(basename $DOCS_REPO)"
-```
-
-Create a feature branch in the docs repo:
-
-```bash
-cd "../$(basename $DOCS_REPO)"
-git checkout -b "docs/$ISSUE_NUMBER-<short-description>"
-```
-
-### 3. Analyze Doc Impact
-
-Read the code PR diff to determine what documentation needs updating:
-
-- **New feature** --> create a new doc file in `$DOCS_PATH`
-- **Changed behavior** --> update existing docs that reference the changed component
-- **Bug fix** --> update known issues section if applicable
-- **No user-facing impact** --> skip with a note
-
-### 4. Create or Update Docs
-
-Write documentation in the configured `$DOCS_PATH`. Follow the existing documentation style in that directory.
-
-### 5. Create Docs PR
-
-```bash
-cd "../$(basename $DOCS_REPO)"
-# Stage only the specific files that were created or modified -- avoid git add -A
-git add <specific doc files changed>
-git commit -m "docs: update documentation for $REPO_OWNER_NAME#$ISSUE_NUMBER"
-git push -u origin "docs/$ISSUE_NUMBER-<short-description>"
-gh pr create --title "docs: <description>" --body "$(cat <<'EOF'
-## Summary
-Documentation update for $REPO_OWNER_NAME#$ISSUE_NUMBER
-
-<bullet points describing doc changes>
-
-## Related
-- Code PR: $REPO_OWNER_NAME#$PR_NUMBER
-EOF
-)"
-```
-
-### 6. Cross-Reference
-
-Back in the code repo, update CHANGELOG.md to reference the docs PR.
+If the docs command determines there is no docs config or no doc impact, it will skip automatically.
 
 ### GATE: User Approval
 
-Use `AskUserQuestion`:
-
-> "Docs PR created: $DOCS_PR_URL
->
-> Changes: <summary of doc updates>
->
-> Ready for your review."
-
-Wait for user approval before proceeding to Phase 5.
+The docs command handles its own confirmation. Once the user approves the docs PR (or the command skips), proceed to Phase 5.
 
 ---
 
