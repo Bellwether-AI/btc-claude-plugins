@@ -1,5 +1,5 @@
 ---
-description: Review a PR created during a co-dwerker work session -- run pr-review-toolkit, address findings, update board status, and present for user approval. Called by /co-dwerker:work Phase 3, or invoke standalone for any PR.
+description: Review any GitHub PR -- run automated review, address findings, update board status, and present for user approval. Use when reviewing a PR, checking PR quality, or when asked to "review this PR" or "review PR #N". Also called by /co-dwerker:work Phase 3 after PR creation.
 ---
 # Co-Dwerker: PR Review
 
@@ -12,6 +12,10 @@ STATE_FILE=".co-dwerker.state.json"
 REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
 REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
 ```
+
+## Step Tracking
+
+Create a task (via `TaskCreate`) for every numbered step and the GATE below. Mark each task `in_progress` before starting it and `completed` when done. Before presenting the GATE, verify all steps are completed.
 
 ## Model Preference
 
@@ -38,14 +42,16 @@ Use `AskUserQuestion`:
 Fetch context:
 
 ```bash
-gh pr view $PR_NUMBER --repo "$REPO_OWNER_NAME" --json number,title,body,headRefName,state
+gh pr view $PR_NUMBER --repo "$REPO_OWNER_NAME" --json number,title,body,headRefName,state,url,labels
 ```
 
-Also check if the state file has `work_mode` and project board context:
+Store the `url` field as `$PR_URL` for the GATE message.
 
-```bash
-# Read .co-dwerker.state.json if it exists
-```
+Also check if the PR body contains `Closes #N` to derive `$ISSUE_NUMBER`. If not found, `$ISSUE_NUMBER` is null.
+
+Check the state file for work mode and project board context:
+
+Read `$STATE_FILE` if it exists and extract: `work_mode`, `github_project_number`, `github_project_title`, and `last_session.current_issue` (use as `$ISSUE_NUMBER` if not already derived from the PR body).
 
 ---
 
@@ -78,6 +84,8 @@ If `WORK_MODE == "project"`, update the project board item status to "In Review"
 gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_IN_REVIEW_ID
 ```
 
+If `$ISSUE_NUMBER` is not available (standalone invocation with no linked issue), skip the board update and tell the user: "No linked issue found for this PR -- skipping project board update."
+
 If `$PROJECT_ID`, `$ITEM_ID`, or field IDs are not in conversation context (standalone invocation), read them from the state file or fetch them:
 
 ```bash
@@ -101,6 +109,8 @@ If nothing was discovered, skip this step.
 ---
 
 ## GATE: User Approval
+
+If `$PR_URL` is not already set, derive it: `https://github.com/$REPO_OWNER_NAME/pull/$PR_NUMBER`.
 
 Use `AskUserQuestion`:
 
