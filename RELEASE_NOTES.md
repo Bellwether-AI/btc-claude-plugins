@@ -18,7 +18,7 @@
 
 ### Known Issues
 
-- `work.md` has grown further above the 500-line skill guideline due to the expanded repo detection and local testing sections. May benefit from extraction to a reference file in a future version.
+- `work.md` is now ~695 lines (above the 500-line skill guideline, up from ~626 in v0.3.0) due to the expanded repo detection and local testing sections. May benefit from extraction to a reference file in a future version.
 - The `REPO_OWNER_NAME` derivation only supports GitHub.com remotes (not GitHub Enterprise or other hosts).
 
 ---

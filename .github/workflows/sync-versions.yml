@@ -14,31 +14,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sync flywheel version to marketplace.json
+      - name: Sync plugin versions to marketplace.json
         run: |
-          PLUGIN_VERSION=$(jq -r ".version" plugins/flywheel/.claude-plugin/plugin.json)
-          MARKETPLACE_VERSION=$(jq -r ".plugins[] | select(.name == \"flywheel\") | .version" .claude-plugin/marketplace.json)
+          CHANGED=false
 
-          if [ "$PLUGIN_VERSION" = "$MARKETPLACE_VERSION" ]; then
-            echo "Versions already match ($PLUGIN_VERSION) — nothing to do"
-            exit 0
-          fi
+          for PLUGIN in flywheel co-dwerker; do
+            PLUGIN_JSON="plugins/$PLUGIN/.claude-plugin/plugin.json"
+            if [ ! -f "$PLUGIN_JSON" ]; then
+              echo "Skipping $PLUGIN — no plugin.json found"
+              continue
+            fi
 
-          echo "Updating marketplace.json: $MARKETPLACE_VERSION -> $PLUGIN_VERSION"
-          jq --arg ver "$PLUGIN_VERSION" '(.plugins[] | select(.name == "flywheel")).version = $ver' .claude-plugin/marketplace.json > tmp.json
-          mv tmp.json .claude-plugin/marketplace.json
+            PLUGIN_VERSION=$(jq -r ".version" "$PLUGIN_JSON")
+            MARKETPLACE_VERSION=$(jq -r ".plugins[] | select(.name == \"$PLUGIN\") | .version" .claude-plugin/marketplace.json)
 
-      - name: Check for changes
-        id: diff
-        run: |
-          git diff --quiet && echo "changed=false" >> "$GITHUB_OUTPUT" || echo "changed=true" >> "$GITHUB_OUTPUT"
+            if [ "$PLUGIN_VERSION" = "$MARKETPLACE_VERSION" ]; then
+              echo "$PLUGIN: versions already match ($PLUGIN_VERSION)"
+            else
+              echo "$PLUGIN: updating marketplace.json $MARKETPLACE_VERSION -> $PLUGIN_VERSION"
+              jq --arg ver "$PLUGIN_VERSION" --arg name "$PLUGIN" '(.plugins[] | select(.name == $name)).version = $ver' .claude-plugin/marketplace.json > tmp.json
+              mv tmp.json .claude-plugin/marketplace.json
+              CHANGED=true
+            fi
+          done
+
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+        id: sync
 
       - name: Commit and push
-        if: steps.diff.outputs.changed == 'true'
+        if: steps.sync.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .claude-plugin/marketplace.json
-          git commit -m "chore: sync flywheel plugin version to $(jq -r .version plugins/flywheel/.claude-plugin/plugin.json)"
+          git commit -m "chore: sync plugin versions to marketplace.json"
           git push
 
