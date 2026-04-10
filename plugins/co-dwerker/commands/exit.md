@@ -19,6 +19,8 @@ Gracefully wind down a co-dwerker work session. This skill persists state across
 TODAY=$(date +%Y-%m-%d)
 STATE_FILE=".co-dwerker.state.json"
 CONFIG_FILE=".co-dwerker.json"
+GLOBAL_STATE_FILE="$HOME/.claude/co-dwerker-last-repo.json"
+GLOBAL_STATE_FILE_LEGACY="$HOME/.co-dwerker-last-repo.json"
 REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
 REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
 # Assumes HTTPS or git@github.com SSH remote format
@@ -89,7 +91,11 @@ This file should be gitignored. If `.gitignore` doesn't already exclude it, add 
 echo ".co-dwerker.state.json" >> .gitignore
 ```
 
-Also write a **global last-repo file** at `~/.co-dwerker-last-repo.json` so that `/co-dwerker:work` can find the repo when launched from a non-project directory:
+Also write a **global last-repo file** at `$GLOBAL_STATE_FILE` (`~/.claude/co-dwerker-last-repo.json`) so that `/co-dwerker:work` can find the repo when launched from a non-project directory:
+
+```bash
+mkdir -p "$HOME/.claude"
+```
 
 ```json
 {
@@ -99,6 +105,11 @@ Also write a **global last-repo file** at `~/.co-dwerker-last-repo.json` so that
 ```
 
 This file is intentionally minimal -- it only stores enough to navigate back to the project. The full session state remains in the project-local `$STATE_FILE`.
+
+**Legacy cleanup:** If a file exists at `$GLOBAL_STATE_FILE_LEGACY` (`~/.co-dwerker-last-repo.json`, the pre-v0.3.1 location), delete it after writing the new file:
+```bash
+rm -f "$HOME/.co-dwerker-last-repo.json"
+```
 
 ### 3. Update GitHub Project Board (project mode only)
 

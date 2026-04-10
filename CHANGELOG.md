@@ -2,6 +2,22 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [co-dwerker v0.3.1] - 2026-04-10
+
+### Added
+- **Multi-repo workspace scanning**: When launched from a directory containing multiple git repos as subdirectories (e.g., a project root with Frontend and Functions repos), `/co-dwerker:work` now scans immediate child directories for git repos with GitHub remotes and presents them as selectable options. Previously this fell through to an unhelpful "provide the path" prompt.
+- **Single-repo shortcut**: When exactly one sub-repo is found, it is used directly with a confirmation message instead of presenting a list of one.
+- **Local app testing step (Phase 3, Step 4a)**: After unit tests and linting pass, `/co-dwerker:work` now attempts to run the application locally. Detects Azure Functions (`host.json` → `func start`), Azure App Services / web apps (.NET `dotnet run`, Python `flask run`/`uvicorn`, Node.js `npm start`), and other web apps (`docker-compose.yml`, `Makefile`). Reports results but does not block the workflow if local testing fails.
+
+### Changed
+- **Global state file location**: Moved `~/.co-dwerker-last-repo.json` to `~/.claude/co-dwerker-last-repo.json` to keep the home directory clean. Reads fall back to the legacy location for backward compatibility; writes always go to the new location.
+- **Legacy cleanup**: `/co-dwerker:exit` now deletes the old `~/.co-dwerker-last-repo.json` after writing the new location.
+- **Repo detection expanded from 4 cases to 6**: New Cases C (sub-repos found, saved repo matches one) and D (sub-repos found, no saved match) handle the multi-repo workspace scenario. Original Cases A, B, E, F are unchanged.
+- **Environment variables**: Added `GLOBAL_STATE_FILE` and `GLOBAL_STATE_FILE_LEGACY` to both `work.md` and `exit.md` for explicit path references.
+
+### Fixed
+- **Multi-repo workspace launch failure**: Launching `/co-dwerker:work` from a workspace root containing multiple repos (e.g., `policy_conductor/` with `PolicyConductor-Frontend-AppService/` and `PolicyConductorFunctions/`) no longer fails with an unhelpful prompt. The skill discovers sub-repos and lets the user pick, with the last-session repo highlighted as default.
+
 ## [co-dwerker v0.3.0] - 2026-04-09
 
 ### Added
