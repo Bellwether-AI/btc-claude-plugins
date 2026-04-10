@@ -1,5 +1,28 @@
 # Release Notes
 
+## co-dwerker v0.3.1
+
+### What's New
+
+**Works from multi-repo workspaces.** When you launch `/co-dwerker:work` from a directory that contains multiple git repos as subdirectories (like a project root with separate Frontend and Functions repos), the plugin now discovers those repos automatically and lets you pick which one to work on. Your last session's repo is highlighted as the default for quick selection. If only one repo is found, it's used automatically.
+
+**Local app testing during execution.** After unit tests and linting pass, the work workflow now attempts to run your application locally to catch runtime issues. It detects Azure Functions (via `host.json`), Azure App Services and web apps (.NET, Python, Node.js), and other common app types. Results are reported but won't block the workflow -- you decide whether to fix local testing issues before creating the PR.
+
+**Cleaner home directory.** The global state file has moved from `~/.co-dwerker-last-repo.json` to `~/.claude/co-dwerker-last-repo.json`. The old file is read as a fallback and cleaned up automatically on next exit.
+
+### Behavior Changes
+
+- Repo detection now has 6 cases instead of 4, with new handling for workspace roots containing multiple git repos.
+- The verification phase now includes a local app testing step (Step 4a) between automated tests and changelog creation.
+- `/co-dwerker:exit` writes the global state file to `~/.claude/` and deletes the legacy file in `~/` if present.
+
+### Known Issues
+
+- `work.md` has grown further above the 500-line skill guideline due to the expanded repo detection and local testing sections. May benefit from extraction to a reference file in a future version.
+- The `REPO_OWNER_NAME` derivation only supports GitHub.com remotes (not GitHub Enterprise or other hosts).
+
+---
+
 ## co-dwerker v0.3.0
 
 ### What's New

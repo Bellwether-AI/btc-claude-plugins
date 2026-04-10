@@ -28,39 +28,79 @@ The mode is remembered per project folder so you only choose once.
 TODAY=$(date +%Y-%m-%d)
 STATE_FILE=".co-dwerker.state.json"
 CONFIG_FILE=".co-dwerker.json"
+GLOBAL_STATE_FILE="$HOME/.claude/co-dwerker-last-repo.json"
+GLOBAL_STATE_FILE_LEGACY="$HOME/.co-dwerker-last-repo.json"
 ```
 
 ### Repo Detection
 
-The current working directory may not be the target repo. This happens when co-dwerker is launched from a plugin marketplace folder, a home directory, or any other non-project location. Detect and confirm the repo before proceeding.
+The current working directory may not be the target repo. This happens when co-dwerker is launched from a workspace root containing multiple repos, a plugin marketplace folder, a home directory, or any other non-project location. Detect and confirm the repo before proceeding.
 
 1. **Check CWD for a git remote:**
    ```bash
    DETECTED_REMOTE=$(git remote get-url origin 2>/dev/null)
    DETECTED_REPO=$(echo "$DETECTED_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
    ```
-   If `git remote` fails (exit code non-zero), the CWD is not a git repo or has no remote.
+   If `git remote` fails (exit code non-zero), the CWD is not a git repo or has no remote. If it succeeds but the URL does not contain `github.com`, treat `DETECTED_REPO` as empty (CWD is a git repo but not GitHub-hosted -- skip to the GitHub hosting guard in step 6 rather than scanning for sub-repos).
 
-2. **Check state file for previous repo:**
-   Look for `$STATE_FILE` in the CWD first. If not found (because the CWD is not the project directory), check the global last-repo file at `~/.co-dwerker-last-repo.json`. Parse whichever is found for `repo_owner_name` and `repo_local_path`. Store as `SAVED_REPO` and `SAVED_REPO_PATH`.
+2. **Check state files for previous repo:**
+   Look for `$STATE_FILE` in the CWD first. If not found, check `$GLOBAL_STATE_FILE` (`~/.claude/co-dwerker-last-repo.json`). If that doesn't exist either, check the legacy location `$GLOBAL_STATE_FILE_LEGACY` (`~/.co-dwerker-last-repo.json`). Parse whichever is found for `repo_owner_name` and `repo_local_path`. Store as `SAVED_REPO` and `SAVED_REPO_PATH`.
 
-3. **Determine the repo to use:**
-   - **CWD has a valid GitHub remote AND matches `SAVED_REPO` (or no saved repo):** use `DETECTED_REPO` silently. Set `REPO_OWNER_NAME=$DETECTED_REPO`.
-   - **CWD has a valid GitHub remote but does NOT match `SAVED_REPO`:** ask the user with `AskUserQuestion`:
+3. **Scan for sub-repos (when CWD is not a git repo):**
+   If step 1 failed (no git remote in CWD), scan immediate subdirectories for git repos with GitHub remotes:
+   ```bash
+   for dir in */; do
+     if [ -d "$dir/.git" ]; then
+       SUB_REMOTE=$(git -C "$dir" remote get-url origin 2>/dev/null)
+       SUB_REPO=$(echo "$SUB_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
+       if [ -n "$SUB_REPO" ]; then
+         echo "$SUB_REPO|$(cd "$dir" && pwd)"
+       fi
+     fi
+   done
+   ```
+   Store the results as `DISCOVERED_REPOS` (list of `repo_owner_name|absolute_path` pairs). Only scan immediate children -- never recurse. Only include repos with a `github.com` remote.
+
+4. **Determine the repo to use:**
+   - **Case A -- CWD has a valid GitHub remote AND matches `SAVED_REPO` (or no saved repo):** use `DETECTED_REPO` silently. Set `REPO_OWNER_NAME=$DETECTED_REPO`.
+   - **Case B -- CWD has a valid GitHub remote but does NOT match `SAVED_REPO`:** ask the user with `AskUserQuestion`:
      > "The current directory is in the **$DETECTED_REPO** repo, but your last session was on **$SAVED_REPO**. Which repo do you want to work on?"
-   - **CWD is NOT a git repo but `SAVED_REPO_PATH` exists:** tell the user:
+   - **Case C -- CWD is NOT a git repo, sub-repos discovered, AND `SAVED_REPO` matches one of them:** Present the discovered repos with the matching repo highlighted as the default. Use the **discovered** path (the freshly scanned one), not the saved path -- the repo may have moved since the last session. Use `AskUserQuestion`:
+     > "The current directory contains multiple repos. Your last session was on **$SAVED_REPO**."
+     >
+     > 1. **$SAVED_REPO** at `$DISCOVERED_PATH` *(last session)*
+     > 2. **$OTHER_REPO_1** at `$OTHER_PATH_1`
+     > 3. **$OTHER_REPO_2** at `$OTHER_PATH_2`
+     >
+     > "Which repo do you want to work on?"
+     After selection, `cd` to the chosen path and re-derive environment variables. If the `cd` fails (path no longer accessible), tell the user and fall through to Case F.
+     **Single-repo shortcut:** If exactly 1 sub-repo is found and it matches the saved repo, use it directly with a confirmation message (no list needed):
+     > "Found repo **$REPO** at `$PATH` (matches your last session). Using it."
+   - **Case D -- CWD is NOT a git repo, sub-repos discovered, but no `SAVED_REPO` OR saved repo does NOT match any discovered repo:** Present discovered repos as a numbered list. If `SAVED_REPO` exists but doesn't match any discovered repo, include it as an additional option. Use `AskUserQuestion`:
+     > "The current directory is not a git repo, but I found these repos in subdirectories:"
+     >
+     > 1. **$REPO_1** at `$PATH_1`
+     > 2. **$REPO_2** at `$PATH_2`
+     > 3. **$SAVED_REPO** at `$SAVED_REPO_PATH` *(last session, not in this directory)*
+     >
+     > "Which one do you want to work on?"
+     If no `SAVED_REPO` exists, omit the last option.
+     After selection, `cd` to the chosen path and re-derive environment variables. If the `cd` fails, tell the user and fall through to Case F.
+     **Single-repo shortcut:** If exactly 1 sub-repo is found (and no saved repo), use it directly:
+     > "Found repo **$REPO** at `$PATH`. Using it."
+   - **Case E -- CWD is NOT a git repo, NO sub-repos discovered, but `SAVED_REPO_PATH` exists:** tell the user:
      > "The current directory is not a git repo. Your last session was on **$SAVED_REPO** at `$SAVED_REPO_PATH`. Navigating there now."
-     Then `cd "$SAVED_REPO_PATH"` and re-derive the environment variables. If the saved path no longer exists, fall through to the next case.
-   - **CWD is NOT a git repo and no saved state:** ask the user with `AskUserQuestion`:
-     > "The current directory is not a git repo. Please provide the path to the repo you want to work on, or navigate there first."
+     Then `cd "$SAVED_REPO_PATH"` and re-derive the environment variables. If the saved path no longer exists, fall through to Case F.
+   - **Case F -- CWD is NOT a git repo, NO sub-repos, AND no saved state:** ask the user with `AskUserQuestion`:
+     > "The current directory is not a git repo and no repos were found in subdirectories. Please provide the path to the repo you want to work on, or navigate there first."
 
-4. **Set final variables:**
+5. **Set final variables:**
    ```bash
    REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
    REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
    ```
 
-5. **GitHub hosting guard:** If `REPO_REMOTE` does not contain `github.com`, stop and tell the user: "co-dwerker requires a GitHub-hosted repository. The origin remote does not appear to be on github.com."
+6. **GitHub hosting guard:** If `REPO_REMOTE` does not contain `github.com`, stop and tell the user: "co-dwerker requires a GitHub-hosted repository. The origin remote does not appear to be on github.com."
 
    If `REPO_OWNER_NAME` is still empty after all steps, stop and tell the user: "Could not determine a GitHub repository. Please `cd` to a git repo with a GitHub remote, or provide the path."
 
@@ -426,6 +466,35 @@ The verification skill will:
 - Confirm all success criteria from the design doc are met
 
 If verification fails, fix the issues and re-verify. Do not proceed until clean.
+
+### 4a. Local App Testing
+
+After automated tests pass, attempt to run the application locally to verify it starts and responds correctly. This catches configuration errors, missing environment variables, and runtime issues that unit tests miss.
+
+**Detection and execution order:**
+
+1. **Azure Functions** -- look for `host.json` in the project root or subdirectories:
+   ```bash
+   find . -maxdepth 2 -name "host.json" | head -5
+   ```
+   If found, attempt `func start` (or the project's configured start command). Verify the function host starts without errors. Test any HTTP trigger endpoints with a simple GET/POST. Stop the host after verification.
+
+2. **Azure App Services / Web Apps** -- look for startup indicators (`Startup.cs`, `Program.cs`, `app.py`, `manage.py`, `package.json` with a `start` script):
+   - .NET: `dotnet run` or `dotnet watch run`
+   - Python (Flask/Django/FastAPI): `python app.py` / `uvicorn` / `gunicorn` / `flask run`
+   - Node.js: `npm start` or `yarn start`
+   Verify the app starts, responds to a health check or root endpoint, then stop it.
+
+3. **Other web apps** -- check `package.json`, `Makefile`, `docker-compose.yml` for start commands. Attempt to run and verify basic health.
+
+**Guidelines:**
+- Run in a background process, wait for startup (up to 30s), test, then kill
+- Before starting, check for port conflicts (e.g., `lsof -i :7071` for Azure Functions, `lsof -i :5000` for Flask). If a port is in use, note it and skip rather than failing with a confusing error.
+- If multiple detection heuristics match (e.g., both `host.json` and `package.json` exist), prefer the more specific one (`host.json` for Azure Functions) over the generic one
+- If the app requires environment variables or secrets not available locally, note which are missing and skip rather than failing
+- If no runnable app is detected, skip this step silently
+- Report results to the user: what was tested, what worked, what failed
+- Do NOT block on this step -- if local testing fails but unit tests pass, note the failure and continue (the user decides whether to fix it before PR)
 
 ### 5. Changelog
 

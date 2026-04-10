@@ -15,7 +15,7 @@
       "name": "co-dwerker",
       "source": "./plugins/co-dwerker",
       "description": "Structured daily development workflow for any GitHub repo. Supports repo mode (GitHub Issues) and project mode (GitHub Projects board). Standup, brainstorm, execute, standalone documentation, close, and session continuity. Optimized for Opus.",
-      "version": "0.3.0"
+      "version": "0.3.1"
     }
   ]
 }
