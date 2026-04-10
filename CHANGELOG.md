@@ -2,6 +2,24 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [co-dwerker v0.3.0] - 2026-04-09
+
+### Added
+- **`/co-dwerker:docs` command**: Standalone companion documentation creation. Can be invoked independently for any PR or Issue, or is called by the work workflow's Phase 4. Asks the user what to document when run standalone, auto-detects context when called from the workflow.
+- **Model preference enforcement**: All commands now recommend Opus model on session start and instruct subagent dispatches to always use `model: "opus"`. Haiku is explicitly prohibited; Sonnet is the minimum fallback.
+- **`repo_local_path` in state file**: New field stores the absolute path to the repo on disk, enabling session resume when launching from a different directory.
+- **Resilient repo detection in `/co-dwerker:work`**: New Repo Detection subsection in the Environment block handles non-repo CWDs gracefully -- checks state file for previous repo path, offers to navigate there automatically, or asks the user to provide the path.
+
+### Changed
+- **Phase 4 (Docs) delegated**: `work.md` Phase 4 is now a thin delegation to the standalone `/co-dwerker:docs` command, reducing work.md by ~60 lines.
+- **State file schema**: Added `repo_local_path` field (absolute path to repo on disk, from `git rev-parse --show-toplevel`).
+- **Plugin description**: Updated plugin.json and marketplace.json to v0.3.0 with mentions of standalone docs and Opus preference.
+- **README**: Added docs command to commands table, added Model Preference section, updated workflow diagram with standalone docs footnote, added `repo_local_path` to state file schema docs.
+
+### Fixed
+- **Non-repo CWD launch failure**: `/co-dwerker:work` no longer fails when launched from a directory that is not a git repo or is a different repo than intended. It checks saved state, offers navigation, and asks for user confirmation.
+- **work.md line count**: Reduced from 654 to ~626 lines. Phase 4 extraction saved ~60 lines, but the new repo detection section added ~30 lines back. Still closer to the 500-line guideline.
+
 ## [co-dwerker v0.2.0] - 2026-04-06
 
 ### Added

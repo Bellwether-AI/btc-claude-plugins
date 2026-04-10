@@ -1,5 +1,27 @@
 # Release Notes
 
+## co-dwerker v0.3.0
+
+### What's New
+
+**Always uses the best model.** co-dwerker now recommends switching to Opus at the start of every session and ensures all subagent dispatches use the most capable model. Haiku is never used; Sonnet is the minimum fallback.
+
+**Create docs independently.** The new `/co-dwerker:docs` command lets you generate companion documentation for any PR or Issue at any time -- not just as part of the full workflow. When run standalone, it asks what PR or Issue to document. When called from the work workflow, it automatically picks up the current context.
+
+**Works from any directory.** You no longer need to be inside the target repo when launching `/co-dwerker:work`. If the current directory is a different repo or not a repo at all, the plugin checks your last session state for the repo path, offers to navigate there automatically, or asks you to provide the path.
+
+### Behavior Changes
+
+- Phase 4 (Docs) in the work workflow now delegates to `/co-dwerker:docs` instead of having inline logic.
+- The state file now includes `repo_local_path` (the absolute path to the repo on disk). This is saved automatically by `/co-dwerker:exit`.
+
+### Known Issues
+
+- `work.md` is ~626 lines (still above the 500-line skill guideline, improved from 654). Phase 4 extraction saved lines but the new repo detection section added some back. Further extraction may help in future versions.
+- The `REPO_OWNER_NAME` derivation only supports GitHub.com remotes (not GitHub Enterprise or other hosts).
+
+---
+
 ## co-dwerker v0.2.0
 
 ### What's New

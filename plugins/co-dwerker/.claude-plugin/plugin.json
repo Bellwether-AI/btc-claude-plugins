@@ -1,7 +1,7 @@
 {
   "name": "co-dwerker",
-  "version": "0.2.0",
-  "description": "Structured daily development workflow for any GitHub repo. Start work, resume work, do standup, triage and work issues, create issues, run a full issue-to-merge development cycle, and wind down sessions with state persistence. Supports repo mode (GitHub Issues with priority labels) and project mode (GitHub Projects board).",
+  "version": "0.3.0",
+  "description": "Structured daily development workflow for any GitHub repo. Start work, resume work, do standup, triage and work issues, create issues, create companion documentation, run a full issue-to-merge development cycle, and wind down sessions with state persistence. Supports repo mode (GitHub Issues with priority labels) and project mode (GitHub Projects board). Optimized for Opus model.",
   "author": {
     "name": "Bellwether AI"
   }
