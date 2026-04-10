@@ -22,6 +22,10 @@ If `REPO_OWNER_NAME` is empty (not in a git repo or no remote):
 2. If found, use it and tell the user: "Using **$SAVED_REPO** from your last session."
 3. If not found, ask: "Which repo are these docs for? Provide the `owner/repo` name."
 
+**GitHub hosting guard:** If `REPO_REMOTE` does not contain `github.com`, stop and tell the user: "co-dwerker requires a GitHub-hosted repository."
+
+**Error handling:** If any `gh` CLI command fails during the docs workflow, report the error to the user and ask how to proceed rather than silently continuing.
+
 ## Model Preference
 
 When dispatching subagents via the `Agent` tool during documentation work, always set `model: "opus"`. Never use `model: "haiku"`. Use `"sonnet"` as minimum fallback.
@@ -34,7 +38,7 @@ Determine what to document. This step adapts based on how the command was invoke
 
 ### If invoked with context (from `/co-dwerker:work` Phase 4):
 
-The calling workflow has `$ISSUE_NUMBER`, `$PR_NUMBER`, and `$REPO_OWNER_NAME` already in the conversation context. Detect this by checking if an active issue and code PR were discussed earlier in the conversation. If so, confirm with the user:
+The calling workflow has `$ISSUE_NUMBER`, `$PR_NUMBER`, and `$REPO_OWNER_NAME` already set in the conversation context. Check whether these values are available from earlier in the conversation (they will be if Phase 3 just completed). If all three are present, confirm with the user:
 
 > "Documenting changes from PR #$PR_NUMBER (Issue #$ISSUE_NUMBER). Proceeding to check docs config."
 

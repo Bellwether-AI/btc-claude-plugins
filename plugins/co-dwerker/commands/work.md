@@ -42,7 +42,7 @@ The current working directory may not be the target repo. This happens when co-d
    If `git remote` fails (exit code non-zero), the CWD is not a git repo or has no remote.
 
 2. **Check state file for previous repo:**
-   Look for `$STATE_FILE` in the CWD. Parse it for `repo_owner_name` and `repo_local_path` if present. Store as `SAVED_REPO` and `SAVED_REPO_PATH`.
+   Look for `$STATE_FILE` in the CWD first. If not found (because the CWD is not the project directory), check the global last-repo file at `~/.co-dwerker-last-repo.json`. Parse whichever is found for `repo_owner_name` and `repo_local_path`. Store as `SAVED_REPO` and `SAVED_REPO_PATH`.
 
 3. **Determine the repo to use:**
    - **CWD has a valid GitHub remote AND matches `SAVED_REPO` (or no saved repo):** use `DETECTED_REPO` silently. Set `REPO_OWNER_NAME=$DETECTED_REPO`.

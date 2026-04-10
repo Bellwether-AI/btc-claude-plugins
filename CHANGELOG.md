@@ -18,7 +18,7 @@ All notable changes to the btc-claude-plugins repository.
 
 ### Fixed
 - **Non-repo CWD launch failure**: `/co-dwerker:work` no longer fails when launched from a directory that is not a git repo or is a different repo than intended. It checks saved state, offers navigation, and asks for user confirmation.
-- **work.md line count**: Reduced from 654 to ~595 lines by extracting Phase 4 docs logic to standalone command (closer to 500-line guideline).
+- **work.md line count**: Reduced from 654 to ~626 lines. Phase 4 extraction saved ~60 lines, but the new repo detection section added ~30 lines back. Still closer to the 500-line guideline.
 
 ## [co-dwerker v0.2.0] - 2026-04-06
 

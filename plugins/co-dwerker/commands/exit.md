@@ -89,6 +89,17 @@ This file should be gitignored. If `.gitignore` doesn't already exclude it, add 
 echo ".co-dwerker.state.json" >> .gitignore
 ```
 
+Also write a **global last-repo file** at `~/.co-dwerker-last-repo.json` so that `/co-dwerker:work` can find the repo when launched from a non-project directory:
+
+```json
+{
+  "repo_owner_name": "owner/repo",
+  "repo_local_path": "/absolute/path/to/repo"
+}
+```
+
+This file is intentionally minimal -- it only stores enough to navigate back to the project. The full session state remains in the project-local `$STATE_FILE`.
+
 ### 3. Update GitHub Project Board (project mode only)
 
 **Skip this step if `work_mode == "repo"`.**
