@@ -117,6 +117,16 @@ co-dwerker performs best with the most capable model available.
 
 ---
 
+## Step Tracking
+
+At the start of each phase, create a task (via `TaskCreate`) for every numbered step and the GATE in that phase. Mark each task `in_progress` before starting it and `completed` when done.
+
+**GATE enforcement:** Before presenting any GATE question to the user, check the task list. If any step in the current phase is not `completed`, go back and complete it before proceeding. Do NOT present the GATE until every step is done.
+
+This prevents step-skipping when implementation work consumes large amounts of context between reading the phase instructions and reaching the GATE.
+
+---
+
 ## Resume Check
 
 Before starting fresh, check for prior session state.
@@ -523,47 +533,20 @@ EOF
 )"
 ```
 
-### 7. Review
+### 7. Review, Address Findings, and User Approval
 
-Use the `Skill` tool to invoke `pr-review-toolkit:review-pr` on the new PR.
+Use the `Skill` tool to invoke `co-dwerker:pr-review`.
 
-### 8. Address Review Findings
+The pr-review command will:
+- Run `pr-review-toolkit:review-pr` on the new PR
+- Address any review findings (fix, re-verify, commit, push -- loop until clean)
+- Update the project board to "In Review" (project mode only)
+- Surface any discovered work items
+- Present the PR to the user for approval via its own GATE
 
-If the review identifies issues:
-1. Fix each finding
-2. Re-run verification (tests + lint)
-3. Commit fixes
-4. Push to the PR branch
+The current conversation already has `$PR_NUMBER`, `$ISSUE_NUMBER`, `$REPO_OWNER_NAME`, and `$WORK_MODE` in context -- the pr-review command will detect this and skip its identification prompt.
 
-Repeat until the review is clean.
-
-### 9. Update Board (project mode only)
-
-If `WORK_MODE == "project"`, update the project board item status to "In Review":
-
-```bash
-gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_IN_REVIEW_ID
-```
-
-### 10. Discovered Work Items
-
-During execution, bugs or additional tasks may surface. Handle them the same way as Phase 2 step 4:
-
-1. Note the discovered item and ask the user if a new issue should be created.
-2. If yes, invoke `/co-dwerker:new-issue`.
-3. Ask whether to add to today's queue or leave for later.
-
-### GATE: User Approval
-
-Use `AskUserQuestion`:
-
-> "PR #$PR_NUMBER is ready for your review: $PR_URL
->
-> Changes: <1-2 sentence summary>
->
-> All tests pass, linting clean, review findings addressed. Ready for you to confirm."
-
-Wait for user approval before proceeding to Phase 4.
+Wait for the pr-review command to complete (including user approval) before proceeding to Phase 4.
 
 ---
 

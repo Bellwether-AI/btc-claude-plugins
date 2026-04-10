@@ -2,6 +2,19 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [co-dwerker v0.3.2] - 2026-04-10
+
+### Added
+- **Step Tracking section**: New top-level instruction in `work.md` requiring task creation (via `TaskCreate`) for every numbered step in each phase. GATEs now enforce that all prior steps are completed before proceeding. Prevents step-skipping when implementation work consumes large amounts of context.
+- **`/co-dwerker:pr-review` command**: Extracted PR review, finding resolution, board update, and user approval from Phase 3 into a standalone command (`commands/pr-review.md`). Can be invoked standalone for any PR, or is called by `/co-dwerker:work` Phase 3 after PR creation. Fresh skill invocation ensures review instructions are loaded into context right when they're needed.
+
+### Changed
+- **Phase 3 (Execute) restructured**: Steps 7-10 + GATE replaced with a single delegation to `/co-dwerker:pr-review`. Phase 3 now has 7 steps (Plan through Create PR) plus the delegation, down from 12 steps + GATE. This is the fix for the step-skipping bug.
+- **work.md line count**: Reduced from ~695 to ~678 lines. The Step Tracking section added ~10 lines, but Phase 3 extraction removed ~27 lines.
+
+### Fixed
+- **Phase 3 steps skipped after PR creation**: The PR review (step 7) and address-findings (step 8) steps were being skipped because the agent lost track of its position after the context-heavy implementation work in steps 1-6. Fixed by both the task-list checkpoint enforcement and the extraction of post-PR steps into a freshly-loaded command.
+
 ## [co-dwerker v0.3.1] - 2026-04-10
 
 ### Added

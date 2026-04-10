@@ -1,5 +1,26 @@
 # Release Notes
 
+## co-dwerker v0.3.2
+
+### What's New
+
+**Steps don't get skipped anymore.** The workflow now uses task-list checkpoints to track progress through each phase. Before any GATE (user approval point), the agent verifies that every step in the current phase is completed. If something was missed, it goes back and finishes it before asking for your approval.
+
+**PR review is its own command.** The review, fix-findings, board-update, and user-approval steps that used to be buried at the end of Phase 3 are now a standalone `/co-dwerker:pr-review` command. This forces a fresh load of focused instructions right after the context-heavy implementation work, preventing the exact scenario where steps 7-8 were skipped. You can also invoke `/co-dwerker:pr-review` directly on any PR.
+
+### Behavior Changes
+
+- Phase 3 now has 7 steps (Plan through Create PR) plus a delegation to `/co-dwerker:pr-review`, down from 12 steps + a GATE.
+- All phases now create task-list items for their steps, making progress visible in the Claude Code task list.
+- GATEs enforce completion of all prior steps before presenting approval questions.
+
+### Known Issues
+
+- `work.md` is ~678 lines (still above the 500-line skill guideline, but improved from ~695 in v0.3.1). The Step Tracking section added ~10 lines while Phase 3 extraction removed ~27.
+- The `REPO_OWNER_NAME` derivation only supports GitHub.com remotes (not GitHub Enterprise or other hosts).
+
+---
+
 ## co-dwerker v0.3.1
 
 ### What's New
