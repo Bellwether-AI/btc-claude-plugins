@@ -157,15 +157,17 @@ Pull `~/.claude/projects/-Users-mattlax-nonedrive-projects/memory/btc-agent-eval
 
 **Critical.** Eval items carry two timestamps: `_ts` is when the LLM ran; `content.ratingDetails.timestamp` is when the human rated. If the previous round's fix PR merged + deployed at time T, any item with `_ts < T_deployed` is a pre-fix artifact and must be excluded from genuine-failure analysis regardless of rating timestamp.
 
-Use the bundled helper:
+Use the bundled helper (resolved via the plugin root so it works no matter how the plugin was installed):
 
 ```bash
-python /Users/mattlax/.claude/skills/agent-eval-updates/scripts/filter_prefix_artifacts.py \
+python "${CLAUDE_PLUGIN_ROOT}/skills/agent-eval-updates/scripts/filter_prefix_artifacts.py" \
   --input eval_data/<agent>_evals_<timestamp>.json \
   --prior-fixes 70,71,16 \
   --repo-map "70=BTC-Python-Agents,71=BTC-Python-Agents,16=BTCAgentPrompts" \
   --output eval_data/<agent>_post_fix_<timestamp>.json
 ```
+
+If `${CLAUDE_PLUGIN_ROOT}` is not set (e.g. the skill is being invoked outside the plugin loader), fall back to a relative path from the skill directory: `python scripts/filter_prefix_artifacts.py ...`.
 
 The script fetches `mergedAt` for each prior-fix PR via `gh pr view`, compares each eval item's `_ts` against the latest prior-fix merge time, writes a filtered JSON, and prints a summary: `N pre-fix artifacts excluded, M post-fix items retained, K×1⭐ L×2⭐ ...`.
 

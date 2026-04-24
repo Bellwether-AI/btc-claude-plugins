@@ -28,7 +28,7 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -111,7 +111,7 @@ def main() -> int:
 
     cutoff = max(merge_times)
     if args.deploy_lag_minutes:
-        cutoff = cutoff.replace(minute=cutoff.minute + args.deploy_lag_minutes)  # rough; for precise use timedelta
+        cutoff = cutoff + timedelta(minutes=args.deploy_lag_minutes)
     cutoff_ts = int(cutoff.timestamp())
 
     print(f"\nEffective cutoff (latest fix merge + {args.deploy_lag_minutes}min lag): "

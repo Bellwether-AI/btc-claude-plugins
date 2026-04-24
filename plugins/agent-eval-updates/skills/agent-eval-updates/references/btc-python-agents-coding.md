@@ -4,13 +4,15 @@ When a tuning round includes **code changes** to `Bellwether-AI/BTC-Python-Agent
 
 ## Where the authoritative coding rules live
 
-The canonical rules for this codebase live in the repo's own `CLAUDE.md`:
+The canonical rules for this codebase live in the repo's own `CLAUDE.md`, always present inside whichever clone you have:
 
 ```
-/Users/mattlax/nonedrive/projects/BTC-Python-Agents/CLAUDE.md
+<any local clone>/BTC-Python-Agents/CLAUDE.md
 ```
 
-This is the **pure-code workspace** the user does hands-on coding in — separate from the `btc_agent_evals` parent project's clone at `/Users/mattlax/nonedrive/projects/btc_agent_evals/BTC-Python-Agents/`. Both clones point at the same GitHub repo. To refresh your understanding of the codebase (agent patterns, RU rules, disabled-function inventory, etc.), read from whichever clone has `main` synced — or use `git show origin/main:CLAUDE.md` directly.
+The parent project always has a clone at `/Users/mattlax/nonedrive/projects/btc_agent_evals/BTC-Python-Agents/`. The user may also keep a separate "pure-code workspace" sibling clone at `/Users/mattlax/nonedrive/projects/BTC-Python-Agents/` for hands-on coding work outside the tuning flow — if that path exists and has `main` checked out cleanly, it's often the freshest reference. Either way, both clones point at the same GitHub repo.
+
+To refresh your understanding of the codebase (agent patterns, RU rules, disabled-function inventory, etc.), read from whichever clone has `main` synced — or use `git show origin/main:CLAUDE.md` directly to guarantee current-tip content regardless of working-tree state.
 
 Further reading referenced by that CLAUDE.md:
 
@@ -235,14 +237,14 @@ If CI fails, surface immediately to the user. Don't continue the session until i
 | Commit messages (step G) | `commit-commands:commit` (optional) |
 | Final gate before user approval (step J) | manual lint + test + sync-with-main |
 
-## Related reference: the pure-code workspace
+## Related reference: the optional pure-code workspace
 
-The user's primary BTC-Python-Agents development workspace is at:
+If the user has a separate "pure-code" sibling clone at:
 
 ```
 /Users/mattlax/nonedrive/projects/BTC-Python-Agents/
 ```
 
-This is separate from the `btc_agent_evals` parent project's own clone. The pure-code workspace has session/state files (`.co-dwerker.state.json`, `.states/`, etc.) that record prior `/co-dwerker:work` sessions — useful for understanding recent work context. During a tuning round, we don't modify that workspace; we work via the ephemeral worktree under `.worktrees/btc-python-agents-<agent>/`.
+(confirm by listing the path), it's where hands-on day-to-day coding happens outside the tuning flow. That workspace may carry session/state files (`.co-dwerker.state.json`, `.states/`, etc.) recording prior `/co-dwerker:work` sessions — useful context when the user asks "what was I working on last in BTC-Python-Agents?" During a tuning round we don't modify that workspace; we work via the ephemeral worktree under `.worktrees/btc-python-agents-<agent>/`.
 
-If the user asks "what was I working on last in BTC-Python-Agents?", the answer lives in `.co-dwerker.state.json` + `.states/*.md` in the pure-code workspace.
+If that sibling clone doesn't exist (fresh install, different user, etc.), the `btc_agent_evals` parent project's clone is always present and is sufficient — this whole section is just a "if you see it, here's what it's for" note, not a requirement.
