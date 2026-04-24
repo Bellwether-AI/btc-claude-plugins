@@ -1,0 +1,8 @@
+{
+  "name": "agent-eval-updates",
+  "version": "0.1.0",
+  "description": "High-autonomy tuning iteration for BTC Azure Function Agents (ticket_prioritizer, ticket_reviewer, etc.) in the btc_agent_evals project. Pulls CosmosDB evaluation data since the last round, filters pre-fix artifacts, analyzes each failure for prompt vs code fix, proposes targeted changes, implements in per-agent git worktrees with local soak testing, opens per-agent PRs, and wraps up. Four user gates only: scope, proposed fix set, start-coding approval, final wrap-up. Ships one skill (agent-eval-updates) with references covering CosmosDB queries, local testing, triage patterns, PR workflow, and BTC-Python-Agents coding invariants + superpowers-driven code-change flow.",
+  "author": {
+    "name": "Bellwether AI"
+  }
+}

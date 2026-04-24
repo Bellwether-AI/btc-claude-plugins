@@ -1,5 +1,29 @@
 # Release Notes
 
+## agent-eval-updates v0.1.0 — 2026-04-24
+
+### What's New
+
+**New plugin.** `agent-eval-updates` joins the marketplace as the third plugin (after `flywheel` and `co-dwerker`). It encapsulates the full end-to-end tuning iteration for BTC Azure Function Agents — the same workflow that's been iterated on through four rounds of real-world use against `ticket_prioritizer` and `ticket_reviewer` in the `btc_agent_evals` project.
+
+**High-autonomy design.** The skill runs most of the work — CosmosDB queries, git archaeology, pre-fix artifact filtering, prompt-vs-code analysis, worktree setup, local soak testing, PR opening, cleanup — without asking for input. The user is consulted at exactly four gates: which agents to tune this round, whether the proposed fix set looks right, approval to start coding, and approval to merge + clean up.
+
+**Prompt-vs-code analysis baked in.** Every failure pattern gets categorized as `{prompt | code | both}` with a cross-check against the repo's recent changelog to avoid re-fixing already-solved issues. The skill ships with a catalog of common failure patterns from prior rounds and heuristics for which language in an evaluator comment maps to which fix type.
+
+**Disciplined code PR flow.** When a round includes changes to `BTC-Python-Agents` (not just prompt edits), the skill follows the full superpowers-driven flow: brainstorming → writing-plans → test-driven-development → executing-plans → verification-before-completion → `pr-review-toolkit:review-pr` loop → **final lint + test gate** before handing the PR to the user. The final gate re-runs `ruff check`, `black --check`, and `pytest` even after the review loop reports clean, specifically to catch drift from small post-review edits.
+
+**BTC-Python-Agents architectural invariants.** The plugin's reference file carries the non-negotiable rules from the BTC-Python-Agents repo's own CLAUDE.md: handler-vs-agent separation (business logic only in `btc_agents/`), CosmosDB RU optimization (two writes max, `logger.info()` for progress), never mutate production code to make tests pass, agent factory/registry for new agents.
+
+**Expected CHANGELOG conflict is intentional.** Per-agent branches result in conflicts in `CHANGELOG.md` and `RELEASE_NOTES.md` when the second PR in a repo merges. This is accepted friction — resolve at merge time by keeping both sections. The per-agent split enables per-agent revert and audit.
+
+### Known Issues / Notes
+
+- Depends on **superpowers**, **pr-review-toolkit**, and **commit-commands** being installed for the full flow. `episodic-memory` integration is optional.
+- CosmosDB access requires the user to be logged in with `az` on a subscription that can reach `btc-ai-cosmosdb` (currently `BTC - Sponsored - 6000 annual`).
+- Initial release. Will iterate based on feedback from real Round 5+ use.
+
+---
+
 ## co-dwerker v0.3.2
 
 ### What's New
