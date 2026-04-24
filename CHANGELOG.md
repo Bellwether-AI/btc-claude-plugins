@@ -2,6 +2,21 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [agent-eval-updates v0.1.0] - 2026-04-24
+
+### Added
+- **New plugin `agent-eval-updates`**: high-autonomy tuning iteration for BTC Azure Function Agents in the `btc_agent_evals` project. Ships a single skill (`agent-eval-updates`) plus five reference files and one helper script.
+- **`plugins/agent-eval-updates/skills/agent-eval-updates/SKILL.md`** (503 lines): main workflow covering 10 phases (0–9) with 4 user gates (scope, proposal, coding approval, wrap-up). 12 critical invariants including the pre-fix artifact filter, per-agent branch convention, prompt-vs-code analysis requirement, and the final lint+test gate after the PR review loop.
+- **`references/cosmos-query.md`**: `query_evals.py` usage, CosmosDB document schema, the critical distinction between `_ts` (when agent ran) and `content.ratingDetails.timestamp` (when human rated).
+- **`references/local-testing.md`**: scratch prompt overlay pattern (avoids blob uploads), azurite + func startup with nvm semantics, webhook replay crafting with `member_id` rewrite for safety, debounce timing (120s default), `TICKET_*_RESOURCE_FILTER=mlax` semantics.
+- **`references/triage-patterns.md`**: catalog of failure patterns from prior rounds with prompt-vs-code heuristics for each category.
+- **`references/pr-workflow.md`**: per-agent branch naming (`tuning/<agent>-YYYY-MM-DD`), CHANGELOG/RELEASE_NOTES conflict resolution recipe (keep both sections), GH issue + PR body templates.
+- **`references/btc-python-agents-coding.md`**: BTC-Python-Agents architectural invariants (handler/agent separation, CosmosDB RU rules, testing-never-mutates-production) + the full superpowers-skill-driven code-change flow (steps A–K) with required `pr-review-toolkit:review-pr` loop and final lint + test gate.
+- **`scripts/filter_prefix_artifacts.py`**: helper that takes an eval JSON + list of prior fix-PR numbers across both repos, fetches `mergedAt` via `gh pr view`, filters items by `_ts`, and emits post-fix-only JSON plus a summary. Avoids manually cross-referencing merge times each round.
+
+### Changed
+- **`.claude-plugin/marketplace.json`**: added `agent-eval-updates` entry pointing at `./plugins/agent-eval-updates` at version `0.1.0`.
+
 ## [co-dwerker v0.3.2] - 2026-04-10
 
 ### Added
