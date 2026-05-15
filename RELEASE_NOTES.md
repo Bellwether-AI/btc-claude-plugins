@@ -1,5 +1,26 @@
 # Release Notes
 
+## co-dwerker v0.3.3
+
+### What's New
+
+**Pre-existing failing tests no longer get blamed on you.** Before any coding starts, `/co-dwerker:work` now runs all of your repo's tests and linters and captures a baseline -- which tests were already broken before this work began. After implementation, the verification step compares the new test run against that baseline so it can tell regressions (caused by this work) apart from pre-existing failures (already broken, not your problem this PR). Pre-existing failures are reported but don't block the workflow; new regressions still must be fixed before proceeding.
+
+Detection covers Python (`uv run pytest`), Node (`npm test`), .NET (`dotnet test`), PowerShell (`Invoke-Pester`), and Go (`go test ./...`). The repo's `CLAUDE.md` is checked first for explicit commands; manifests are fallback. If no tests are detected, the step skips quietly.
+
+### Behavior Changes
+
+- Phase 3 (Execute) now starts with Step 1 Baseline Tests. Existing steps renumbered to 2-8 (Plan, Isolate, Implement, Verify, Local App Testing as 5a, Changelog, Create PR, Review).
+- A new file `.co-dwerker.baseline-tests.json` is written to the repo root during Phase 3. It is automatically removed during Phase 5 cleanup, so it should not appear in commits. If you see it in your working tree, you can safely delete it.
+- The verification step now distinguishes pre-existing failures from regressions in its output.
+
+### Known Issues
+
+- Baseline runs are capped at 10 minutes of cumulative wall-clock time; very large test suites may not capture every test before the timeout.
+- The baseline file is added to `.git/info/exclude` automatically so intermediate commits don't pick it up, but if you've already committed one from an earlier version, you'll need to remove it manually.
+
+---
+
 ## co-dwerker v0.3.2
 
 ### What's New
