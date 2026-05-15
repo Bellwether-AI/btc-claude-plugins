@@ -1,5 +1,5 @@
 ---
-description: Start or resume a structured work session -- daily standup, issue triage, brainstorm, implement, review, merge, docs, and session continuity. Use when starting work, resuming work, doing standup, picking issues, or running a full issue-to-merge development cycle.
+description: Start or resume a structured work session -- daily standup, issue triage, brainstorm, implement, review, merge, docs, and session continuity. Captures pre-existing test and local-app baselines before coding (may pause if the local app fails to boot on the unmodified branch). Use when starting work, resuming work, doing standup, picking issues, or running a full issue-to-merge development cycle.
 ---
 # Co-Dwerker: Work
 
@@ -478,20 +478,15 @@ Do not call `AskUserQuestion` here. Continue to Step 1b.
 
 Capture the unmodified branch's local-app behavior — boot status, errors, and warnings — **before any coding starts**, so the post-implementation Step 5a can distinguish regressions from pre-existing app issues. The downstream diff treatment is in Step 5a below.
 
-**Read `references/baseline-localapp.md`** for the detection cascade, pre-flight checks, boot detection (ready signal + HTTP probe), 90-second idle watch, log capture rules, normalization pipeline, JSON schema, gate behavior on boot failure, and the 15-minute cumulative cap. Follow its instructions to perform the capture, then return here.
+**Read `references/baseline-localapp.md`** for the detection cascade, pre-flight checks, boot detection (ready signal + HTTP probe), 90-second idle watch, log capture rules, normalization pipeline, JSON schema, file-write instructions (including `.git/info/exclude` propagation), gate behavior on boot failure, and the 15-minute cumulative cap. Follow its instructions end to end, then return here.
 
-After the reference's instructions complete:
+After the reference's instructions complete, route based on the outcome:
 
-- If a baseline was successfully captured, write `.co-dwerker.baseline-localapp.json` to the repo root (the reference describes the schema). Add the filename to `.git/info/exclude` using the same idempotent pattern as the test baseline:
-
-  ```bash
-  grep -qxF '.co-dwerker.baseline-localapp.json' .git/info/exclude 2>/dev/null \
-    || echo '.co-dwerker.baseline-localapp.json' >> .git/info/exclude
-  ```
-
-- If no runnable app was detected, do **not** write a baseline file. Tell the user: "No runnable application detected. Skipping local app baseline. Step 5a will skip the after-impl run as well." Continue to Step 2.
-
-- If the baseline boot failed and the user chose **option 1 (fix and retry)** at the gate, loop back to the top of Step 1b. If they chose **option 2 (skip baseline)**, write a baseline file recording the failure (`boot_status`, no logs) so Step 5a knows the user opted out, then continue to Step 2. If they chose **option 3 (cancel)**, exit `/co-dwerker:work` cleanly.
+- **Successful baseline captured** (file written): surface the appropriate summary template below to the user and continue to Step 2.
+- **No app detected** (no file written): surface the skip template below and continue to Step 2.
+- **Boot failure, gate option 1 (fix and retry)**: loop back to the top of Step 1b and re-run the reference's instructions.
+- **Boot failure, gate option 2 (skip baseline)**: the reference writes a baseline file with `boot_status: "skipped"` so Step 5a knows you opted out. Surface the skip template below and continue to Step 2.
+- **Boot failure, gate option 3 (cancel)**: exit `/co-dwerker:work` cleanly. Do not proceed to Step 2.
 
 #### Surface a summary to the user (no gate when baseline succeeded)
 
@@ -557,7 +552,7 @@ The verification skill will:
 
 Linters (`kind: "lint"`) and any suite that the baseline marked `tooling_missing` or `timeout` are treated normally (no baseline comparison -- exit_code 0 means clean, non-zero must be fixed).
 
-If the baseline marked any suite's `failing_tests_truncated: true`, warn the user: "Baseline failing-tests list was truncated to 50 entries for that suite; a 'new failure' below may actually be a pre-existing failure that didn't fit in the truncated list. Verify before treating it as a regression."
+If the baseline marked any suite's `failing_tests_truncated: true`, warn the user: "Baseline failing-tests list was truncated to 50 entries for that suite; a 'new failure' below may actually be a pre-existing failure that didn't fit in the truncated list. Verify manually (e.g., `git stash && pytest path::to::test_name`) before treating any truncated-suite failure as a regression. If you can't verify it was pre-existing, treat it as a regression and fix it — the truncation warning is not a license to skip the fix."
 
 **If `.co-dwerker.baseline-tests.json` does not exist** (Step 1 detected no tests, or the workflow is running in a repo that lacked the baseline step in a prior session): treat all current test failures as regressions and fix before proceeding. There is no pre-existing-failures carve-out without a baseline.
 
@@ -601,11 +596,11 @@ After automated tests pass, attempt to run the application locally to verify it 
   - Baseline boot failure → current boot failure: report both statuses but do not block (the baseline was already failing; this work didn't change that). If the *specific* failure mode differs (e.g., baseline `timeout` → current `crashed_during_idle`), flag for user attention.
   - Baseline `skipped` (user opted out at Step 1b gate): no comparison possible; report current state without baseline framing, treat all errors as potentially new but do not block.
 
-- **Log-entry diff** (compare on the `normalized` field of each error/warning entry within the same app `name`):
-  - **Pre-existing** (in both baseline and current): report under "Pre-existing (was broken before this work)" — informational, do not block.
-  - **New errors** (in current only, `kind: error`): treat as **regressions** and fix before continuing. **These block.**
-  - **New warnings** (in current only, `kind: warning`): report under "New warnings (likely caused by this work)" but do **not** block. Warning churn is high and unactionable churn would block too often.
-  - **Resolved** (in baseline only): report under "Resolved (was failing in baseline, clean now)" — positive side effect.
+- **Log-entry diff** — apply separately to each app's `log_errors[]` array and `log_warnings[]` array, matching on the `normalized` field of each entry within the same app `name`:
+  - **Pre-existing** (entries present in both baseline and current): report under "Pre-existing (was broken before this work)" — informational, do not block.
+  - **New errors** (entries present in current `log_errors[]` only): treat as **regressions** and fix before continuing. **These block.**
+  - **New warnings** (entries present in current `log_warnings[]` only): report under "New warnings (likely caused by this work)" but do **not** block. Warning churn is high and unactionable churn would block too often.
+  - **Resolved** (entries present in baseline only): report under "Resolved (was failing in baseline, clean now)" — positive side effect.
 
 **If `.co-dwerker.baseline-localapp.json` does not exist** (Step 1b detected no app, or the workflow is running in a repo that lacked the baseline step): report all errors/warnings as potentially new, prefixed with a "no baseline available" note. Do not block.
 

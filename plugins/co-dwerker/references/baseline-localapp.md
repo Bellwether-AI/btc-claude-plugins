@@ -146,7 +146,7 @@ If `boot_status` is `failed_to_start`, `timeout`, `preflight_failed`, or `crashe
 > The post-implementation comparison won't be meaningful without a successful baseline. How do you want to proceed?
 >
 > 1. **Fix the environment and retry baseline** — I'll pause while you address the issue (start a missing service, free the port, set local config), then re-run Step 1b.
-> 2. **Skip local app baseline for this session** — Step 5a still runs after implementation but has no baseline to diff against; all errors and warnings will be treated as potentially new.
+> 2. **Skip the baseline capture for this session** — a baseline file with `boot_status: "skipped"` is written so Step 5a knows you opted out; Step 5a will still run after implementation but will treat all errors and warnings as potentially new (not blocking).
 > 3. **Cancel this session** — abort `/co-dwerker:work` so you can address the environment issue without the workflow waiting on you."
 
 On choice 1, loop back to pre-flight and retry. On choice 2, write a baseline file with `boot_status: "skipped"`, empty `log_errors` / `log_warnings`, and return to `commands/work.md` Step 1b to continue. On choice 3, exit `/co-dwerker:work` cleanly.
@@ -159,9 +159,20 @@ This is the **only** `AskUserQuestion` gate added by the v0.3.4 changes — ever
 
 If the cap is reached while a single app is mid-boot or mid-idle, terminate the process, record what was captured with `boot_status: "timeout"`, mark any undetected/unstarted apps `timeout` with empty captures, and gate (boot-failure rules above apply).
 
-## Schema
+## Write the baseline file
 
-Write `.co-dwerker.baseline-localapp.json` to the repo root:
+Before writing, add the file to the repo's local git exclude so intermediate `superpowers:executing-plans` commits do not accidentally include it:
+
+```bash
+grep -qxF '.co-dwerker.baseline-localapp.json' .git/info/exclude 2>/dev/null \
+  || echo '.co-dwerker.baseline-localapp.json' >> .git/info/exclude
+```
+
+(This only affects the local clone; the repo's `.gitignore` is not modified.)
+
+Write `.co-dwerker.baseline-localapp.json` to the repo root using the schema below:
+
+## Schema
 
 ```json
 {

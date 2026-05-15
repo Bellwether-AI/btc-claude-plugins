@@ -19,7 +19,7 @@ In this order, stopping when something is found:
    - `*.csproj` / `*.sln` → `dotnet test`
    - `*.Tests.ps1` → `Invoke-Pester`
    - `go.mod` → `go test ./...`
-3. **Nothing detected** — do **not** write `.co-dwerker.baseline-tests.json`. Tell the user with the "skip" summary template in `commands/work.md` Step 1 and return control to work.md to continue to Step 1b. Downstream Step 5 treats a missing baseline file as "no baseline available".
+3. **Nothing detected** — do **not** write `.co-dwerker.baseline-tests.json`. Return control to `commands/work.md` Step 1, which will surface the user-facing skip message ("No test commands detected (checked `CLAUDE.md`, manifests). Skipping test baseline. Verification will run whatever's available after implementation.") and continue to Step 1b. Downstream Step 5 treats a missing baseline file as "no baseline available".
 
 ## Run each detected suite
 
