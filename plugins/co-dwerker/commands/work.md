@@ -449,83 +449,9 @@ Autonomous implementation. After design approval, the following happens without 
 
 ### 1. Baseline Tests
 
-Capture the repo's pre-existing test state **before any coding starts** so the post-implementation verification can distinguish regressions from already-broken tests. This is informational only -- failures do not block the workflow.
+Capture the repo's pre-existing test state **before any coding starts** so the post-implementation verification (Step 5) can distinguish regressions from already-broken tests. This is informational only — failures do not block the workflow.
 
-Run this in the current working directory (before the worktree is created in Step 3). The CWD reflects the target branch state with no co-dwerker edits.
-
-#### Detect available test and lint commands
-
-In this order, stopping when something is found:
-
-1. **Project `CLAUDE.md`** -- read the repo's `CLAUDE.md` (and any nested `CLAUDE.md` files for monorepos) for explicit test/lint commands. Examples to look for: `uv run pytest`, `pytest`, `npm test`, `dotnet test`, `Invoke-Pester`, `go test ./...`, `uv run ruff check .`, `uv run black --check .`.
-2. **Manifest files** -- if `CLAUDE.md` is silent, infer from manifests:
-   - `pyproject.toml` / `setup.cfg` / `tox.ini` -> `uv run pytest` (or `pytest` if `uv` is not installed)
-   - `package.json` with a `scripts.test` -> `npm test` (or `yarn test` / `pnpm test` based on lockfile)
-   - `*.csproj` / `*.sln` -> `dotnet test`
-   - `*.Tests.ps1` -> `Invoke-Pester`
-   - `go.mod` -> `go test ./...`
-3. **Nothing detected** -- do **not** write `.co-dwerker.baseline-tests.json`. Tell the user with the "skip" summary template below and continue to Step 2. Downstream Step 5 treats a missing baseline file as "no baseline available" (see Step 5 for the corresponding behavior).
-
-#### Run each detected suite
-
-Run all detected suites independently. One suite failing does **not** block subsequent suites. Capture for each: command, exit code, totals (passed/failed/errors/skipped), duration in seconds, and a list of failing test identifiers (truncate to the first 50 per suite).
-
-Cap **cumulative** wall-clock time across all suites combined at 10 minutes (suite execution only; detection and parse time are not counted). If a single suite is still running when the cap is reached, terminate it, record its `status: "timeout"` with `null` totals (or whatever partial totals were captured), then mark any remaining undetected suites `status: "timeout"` with `null` totals and continue. Per-suite timeouts are not enforced -- only the cumulative cap.
-
-If a command's tooling is missing (e.g., `pytest: command not found`), record `status: "tooling_missing"` for that suite and continue.
-
-#### Write the baseline file
-
-Before writing, add the file to the repo's local git exclude so intermediate `superpowers:executing-plans` commits do not accidentally include it:
-
-```bash
-grep -qxF '.co-dwerker.baseline-tests.json' .git/info/exclude 2>/dev/null \
-  || echo '.co-dwerker.baseline-tests.json' >> .git/info/exclude
-```
-
-(This only affects the local clone; the repo's `.gitignore` is not modified.)
-
-Write `.co-dwerker.baseline-tests.json` to the repo root:
-
-```json
-{
-  "captured_at": "<ISO 8601 UTC>",
-  "branch": "<current branch>",
-  "commit": "<git rev-parse HEAD>",
-  "issue_number": <ACTIVE_ISSUE>,
-  "suites": [
-    {
-      "name": "pytest",
-      "kind": "test",
-      "command": "uv run pytest",
-      "status": "completed",
-      "exit_code": 1,
-      "duration_seconds": 47,
-      "totals": { "passed": 142, "failed": 3, "errors": 0, "skipped": 5 },
-      "failing_tests": ["tests/test_foo.py::test_bar"],
-      "failing_tests_truncated": false
-    },
-    {
-      "name": "ruff",
-      "kind": "lint",
-      "command": "uv run ruff check .",
-      "status": "completed",
-      "exit_code": 0,
-      "duration_seconds": 2,
-      "totals": null,
-      "failing_tests": [],
-      "failing_tests_truncated": false
-    }
-  ]
-}
-```
-
-Field notes:
-
-- `kind`: `"test"` or `"lint"`. Linters share the same `suites[]` array but their `totals` and `failing_tests` fields are typically `null` / `[]` -- pass/fail is determined by `exit_code` alone (0 = clean, non-zero = issues found).
-- `status` enum: `completed` (suite ran to completion), `skipped` (suite was detected but the agent chose not to run it -- rare; not currently triggered by any rule in this skill, reserved for future use), `tooling_missing` (the command's binary was not found, e.g., `pytest: command not found`), `timeout` (cumulative 10-minute cap hit).
-- `totals`: required for `status: "completed"` test suites; `null` for lint suites, `tooling_missing`, `timeout`, or any partial-data case.
-- `failing_tests`: truncated to the first 50 entries per suite to keep the file small. When truncation occurred, set `failing_tests_truncated: true` so Step 5 Verify can warn the user that the baseline diff is best-effort rather than exhaustive.
+**Read `references/baseline-tests.md`** for the detection cascade, suite-run mechanics, `.git/info/exclude` write pattern, schema for `.co-dwerker.baseline-tests.json`, and skip-case behavior. Follow its instructions to perform the capture, then return here.
 
 #### Surface a summary to the user (no gate)
 
@@ -536,17 +462,52 @@ For a baseline with failures:
 > - ruff: clean
 > - black: clean
 >
-> Pre-existing failures are recorded in `.co-dwerker.baseline-tests.json`. These will be excluded from regression checks during verification. Proceeding to plan/implement."
+> Pre-existing failures are recorded in `.co-dwerker.baseline-tests.json`. These will be excluded from regression checks during verification. Proceeding to local-app baseline."
 
 For a clean baseline:
 
-> "Baseline test run clean (pytest: 142 passed, ruff/black clean). Proceeding to plan/implement."
+> "Baseline test run clean (pytest: 142 passed, ruff/black clean). Proceeding to local-app baseline."
 
-For a skip:
+For a skip (no test commands detected):
 
-> "No test commands detected (checked `CLAUDE.md`, manifests). Skipping baseline. Verification will run whatever's available after implementation."
+> "No test commands detected (checked `CLAUDE.md`, manifests). Skipping test baseline. Verification will run whatever's available after implementation."
 
-Do not call `AskUserQuestion` here. Continue to Step 2.
+Do not call `AskUserQuestion` here. Continue to Step 1b.
+
+### 1b. Baseline Local App
+
+Capture the unmodified branch's local-app behavior — boot status, errors, and warnings — **before any coding starts**, so the post-implementation Step 5a can distinguish regressions from pre-existing app issues. The downstream diff treatment is in Step 5a below.
+
+**Read `references/baseline-localapp.md`** for the detection cascade, pre-flight checks, boot detection (ready signal + HTTP probe), 90-second idle watch, log capture rules, normalization pipeline, JSON schema, gate behavior on boot failure, and the 15-minute cumulative cap. Follow its instructions to perform the capture, then return here.
+
+After the reference's instructions complete:
+
+- If a baseline was successfully captured, write `.co-dwerker.baseline-localapp.json` to the repo root (the reference describes the schema). Add the filename to `.git/info/exclude` using the same idempotent pattern as the test baseline:
+
+  ```bash
+  grep -qxF '.co-dwerker.baseline-localapp.json' .git/info/exclude 2>/dev/null \
+    || echo '.co-dwerker.baseline-localapp.json' >> .git/info/exclude
+  ```
+
+- If no runnable app was detected, do **not** write a baseline file. Tell the user: "No runnable application detected. Skipping local app baseline. Step 5a will skip the after-impl run as well." Continue to Step 2.
+
+- If the baseline boot failed and the user chose **option 1 (fix and retry)** at the gate, loop back to the top of Step 1b. If they chose **option 2 (skip baseline)**, write a baseline file recording the failure (`boot_status`, no logs) so Step 5a knows the user opted out, then continue to Step 2. If they chose **option 3 (cancel)**, exit `/co-dwerker:work` cleanly.
+
+#### Surface a summary to the user (no gate when baseline succeeded)
+
+For a clean baseline:
+
+> "Local app baseline clean: {app type} booted in {N}s with no errors during the 90s observation window. {M} warnings captured (recorded for diff, not blocking). Proceeding to plan/implement."
+
+For a baseline with errors/warnings captured (but successful boot):
+
+> "Local app baseline captured: {app type} booted successfully. {N} errors and {M} warnings recorded in `.co-dwerker.baseline-localapp.json`. These will be excluded from regression checks during Step 5a. Proceeding to plan/implement."
+
+For a skip (no app detected):
+
+> "No runnable application detected. Skipping local app baseline. Proceeding to plan/implement."
+
+Continue to Step 2.
 
 ### 2. Plan
 
@@ -558,14 +519,16 @@ The writing-plans skill will create a detailed implementation plan from the desi
 
 Use the `Skill` tool to invoke `superpowers:using-git-worktrees` to create an isolated worktree for this work.
 
-Record the worktree path and branch name for the state file. If `.co-dwerker.baseline-tests.json` was written in Step 1, copy it into the worktree root and also add it to the worktree's local exclude so intermediate commits there do not pick it up:
+Record the worktree path and branch name for the state file. If either `.co-dwerker.baseline-tests.json` or `.co-dwerker.baseline-localapp.json` was written in Step 1 / Step 1b, copy it into the worktree root and also add it to the worktree's local exclude so intermediate commits there do not pick it up:
 
 ```bash
-if [ -f .co-dwerker.baseline-tests.json ]; then
-  cp .co-dwerker.baseline-tests.json "$WORKTREE_PATH/.co-dwerker.baseline-tests.json"
-  grep -qxF '.co-dwerker.baseline-tests.json' "$WORKTREE_PATH/.git/info/exclude" 2>/dev/null \
-    || echo '.co-dwerker.baseline-tests.json' >> "$WORKTREE_PATH/.git/info/exclude"
-fi
+for f in .co-dwerker.baseline-tests.json .co-dwerker.baseline-localapp.json; do
+  if [ -f "$f" ]; then
+    cp "$f" "$WORKTREE_PATH/$f"
+    grep -qxF "$f" "$WORKTREE_PATH/.git/info/exclude" 2>/dev/null \
+      || echo "$f" >> "$WORKTREE_PATH/.git/info/exclude"
+  fi
+done
 ```
 
 Note: a linked worktree's `.git` is a file pointing to `<main>/.git/worktrees/<name>/`; that directory has its own `info/exclude`. The block above resolves that automatically because `$WORKTREE_PATH/.git/info/exclude` follows the gitdir indirection.
@@ -627,7 +590,26 @@ After automated tests pass, attempt to run the application locally to verify it 
 - If the app requires environment variables or secrets not available locally, note which are missing and skip rather than failing
 - If no runnable app is detected, skip this step silently
 - Report results to the user: what was tested, what worked, what failed
-- Do NOT block on this step -- if local testing fails but unit tests pass, note the failure and continue (the user decides whether to fix it before PR)
+- Do NOT block on this step generally — if local testing surfaces unexpected behavior but unit tests pass, note it and continue. **However**, see the baseline-diff rules below for the one case where new errors block.
+
+**Baseline diff:** If `.co-dwerker.baseline-localapp.json` exists in the working directory (written by Step 1b), read it and diff the current run's results against the baseline using the normalization rules described in `references/baseline-localapp.md`:
+
+- **Boot status comparison** (treat `started` and `started_no_signal` as equivalent "healthy boot"; treat `failed_to_start`, `timeout`, `crashed_during_idle`, and `preflight_failed` as equivalent "boot failure"):
+  - Baseline healthy → current healthy: proceed to log-entry diff below.
+  - Baseline healthy → current **boot failure**: **REGRESSION**, block, force fix before proceeding. Report the specific current `boot_status` and the first 3 error entries from the current snapshot.
+  - Baseline boot failure → current healthy: positive side effect, report enthusiastically.
+  - Baseline boot failure → current boot failure: report both statuses but do not block (the baseline was already failing; this work didn't change that). If the *specific* failure mode differs (e.g., baseline `timeout` → current `crashed_during_idle`), flag for user attention.
+  - Baseline `skipped` (user opted out at Step 1b gate): no comparison possible; report current state without baseline framing, treat all errors as potentially new but do not block.
+
+- **Log-entry diff** (compare on the `normalized` field of each error/warning entry within the same app `name`):
+  - **Pre-existing** (in both baseline and current): report under "Pre-existing (was broken before this work)" — informational, do not block.
+  - **New errors** (in current only, `kind: error`): treat as **regressions** and fix before continuing. **These block.**
+  - **New warnings** (in current only, `kind: warning`): report under "New warnings (likely caused by this work)" but do **not** block. Warning churn is high and unactionable churn would block too often.
+  - **Resolved** (in baseline only): report under "Resolved (was failing in baseline, clean now)" — positive side effect.
+
+**If `.co-dwerker.baseline-localapp.json` does not exist** (Step 1b detected no app, or the workflow is running in a repo that lacked the baseline step): report all errors/warnings as potentially new, prefixed with a "no baseline available" note. Do not block.
+
+If verification fails on **new errors** or a **healthy → boot failure** regression, fix the issues and re-verify Step 5a. Do not proceed until clean. Pre-existing errors and new warnings alone do not block.
 
 ### 6. Changelog
 
@@ -743,10 +725,12 @@ git branch -d "$BRANCH_NAME" 2>/dev/null
 # Remove worktree if one was created
 git worktree remove "$WORKTREE_PATH" 2>/dev/null
 
-# Remove the baseline test capture from both worktree and main repo root
-# (ephemeral per-issue artifact from Phase 3 Step 1, copied into worktree in Phase 3 Step 3)
+# Remove the baseline capture files from both worktree and main repo root
+# (ephemeral per-issue artifacts from Phase 3 Step 1 and Step 1b, copied into worktree in Phase 3 Step 3)
 rm -f "$WORKTREE_PATH/.co-dwerker.baseline-tests.json" 2>/dev/null
+rm -f "$WORKTREE_PATH/.co-dwerker.baseline-localapp.json" 2>/dev/null
 rm -f .co-dwerker.baseline-tests.json
+rm -f .co-dwerker.baseline-localapp.json
 
 # Clean up docs repo clone if we created one
 # (only if it was freshly cloned for this session)
