@@ -2,6 +2,22 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [co-dwerker v0.3.3] - 2026-05-15
+
+### Added
+- **Phase 3 Step 1 -- Baseline Tests**: New first step in the Execute phase of `/co-dwerker:work`. Before any planning or coding, the workflow now runs all available test suites and lint commands in the current working directory and captures the result to `.co-dwerker.baseline-tests.json`. Detects test commands from the repo's `CLAUDE.md` first, falling back to manifest heuristics for Python (`pyproject.toml` → `uv run pytest`), Node (`package.json` → `npm test`), .NET (`*.csproj` → `dotnet test`), PowerShell (`*.Tests.ps1` → `Invoke-Pester`), and Go (`go.mod` → `go test ./...`). Captures per-suite totals, exit code, duration, and the first 50 failing test identifiers. Capture-and-continue semantics — failures are reported but never gate the workflow.
+- **Baseline diff in Step 5 Verify**: The verification step now reads `.co-dwerker.baseline-tests.json` (if present) and classifies current failures as pre-existing (don't block), regressions caused by this work (must fix), or newly-passing tests (positive side effect). Pre-existing failures alone no longer block the workflow.
+- **Baseline file propagation in Step 3 Isolate**: When the worktree is created, the baseline JSON is copied into the worktree root so verification reads it from the same working directory the implementation happens in.
+- **Baseline cleanup in Phase 5 Step 6**: `rm -f .co-dwerker.baseline-tests.json` added to the clean-up commands so the per-issue artifact does not leak between sessions.
+- **Local git exclude entry**: Step 1 appends `.co-dwerker.baseline-tests.json` to `.git/info/exclude` (idempotently) so intermediate commits from `superpowers:executing-plans` do not include the baseline file. Step 3 (Isolate) repeats the same exclude write inside the worktree's gitdir (`$WORKTREE_PATH/.git/info/exclude`) after copying the file in. The repo's tracked `.gitignore` is not modified.
+- **Schema fields**: `kind` (`"test"` or `"lint"`) and `failing_tests_truncated` (boolean) added to per-suite schema. `kind` lets Step 5 Verify treat linters differently (no baseline diff, only exit-code check). `failing_tests_truncated` warns when the 50-entry truncation could cause false-positive regressions.
+- **Skip-case downstream behavior**: Step 5 Verify now explicitly handles the case where no baseline file exists -- all current test failures are treated as regressions and must be fixed. Without this rule the agent's behavior was ambiguous when Step 1 found no tests.
+- **Timeout semantics**: The 10-minute cap is explicitly cumulative across all suites (not per-suite); a single suite still running when the cap is reached is terminated with `status: "timeout"` and `null` totals.
+
+### Changed
+- **Phase 3 step numbering**: Plan/Isolate/Implement/Verify/Local-App/Changelog/Create-PR/Review renumbered from 1-7 to 2-8 (with Local App Testing now Step 5a) to accommodate the new Step 1 Baseline Tests at the top of the phase.
+- **Stale cross-reference fixed**: Phase 2 Step 3 used to say `$ITEM_ID` is reused in "Phase 3 (step 9) and Phase 5 (step 5)" -- corrected to "Phase 3 (Step 8 PR Review, via `/co-dwerker:pr-review`) and Phase 5 (Step 5 Board Update)".
+
 ## [agent-eval-updates v0.1.0] - 2026-04-24
 
 ### Added

@@ -425,7 +425,7 @@ ITEM_ID=$(gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --form
 gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_IN_PROGRESS_ID
 ```
 
-Cache `$ITEM_ID` -- it is reused in Phase 3 (step 9) and Phase 5 (step 5) for board updates.
+Cache `$ITEM_ID` -- it is reused in Phase 3 (Step 8 PR Review, via `/co-dwerker:pr-review`) and Phase 5 (Step 5 Board Update) for board updates.
 
 ### 4. Discovered Work Items
 
@@ -447,25 +447,136 @@ The brainstorming skill handles its own approval gate. Once the user approves th
 
 Autonomous implementation. After design approval, the following happens without user intervention until the PR is ready.
 
-### 1. Plan
+### 1. Baseline Tests
+
+Capture the repo's pre-existing test state **before any coding starts** so the post-implementation verification can distinguish regressions from already-broken tests. This is informational only -- failures do not block the workflow.
+
+Run this in the current working directory (before the worktree is created in Step 3). The CWD reflects the target branch state with no co-dwerker edits.
+
+#### Detect available test and lint commands
+
+In this order, stopping when something is found:
+
+1. **Project `CLAUDE.md`** -- read the repo's `CLAUDE.md` (and any nested `CLAUDE.md` files for monorepos) for explicit test/lint commands. Examples to look for: `uv run pytest`, `pytest`, `npm test`, `dotnet test`, `Invoke-Pester`, `go test ./...`, `uv run ruff check .`, `uv run black --check .`.
+2. **Manifest files** -- if `CLAUDE.md` is silent, infer from manifests:
+   - `pyproject.toml` / `setup.cfg` / `tox.ini` -> `uv run pytest` (or `pytest` if `uv` is not installed)
+   - `package.json` with a `scripts.test` -> `npm test` (or `yarn test` / `pnpm test` based on lockfile)
+   - `*.csproj` / `*.sln` -> `dotnet test`
+   - `*.Tests.ps1` -> `Invoke-Pester`
+   - `go.mod` -> `go test ./...`
+3. **Nothing detected** -- do **not** write `.co-dwerker.baseline-tests.json`. Tell the user with the "skip" summary template below and continue to Step 2. Downstream Step 5 treats a missing baseline file as "no baseline available" (see Step 5 for the corresponding behavior).
+
+#### Run each detected suite
+
+Run all detected suites independently. One suite failing does **not** block subsequent suites. Capture for each: command, exit code, totals (passed/failed/errors/skipped), duration in seconds, and a list of failing test identifiers (truncate to the first 50 per suite).
+
+Cap **cumulative** wall-clock time across all suites combined at 10 minutes (suite execution only; detection and parse time are not counted). If a single suite is still running when the cap is reached, terminate it, record its `status: "timeout"` with `null` totals (or whatever partial totals were captured), then mark any remaining undetected suites `status: "timeout"` with `null` totals and continue. Per-suite timeouts are not enforced -- only the cumulative cap.
+
+If a command's tooling is missing (e.g., `pytest: command not found`), record `status: "tooling_missing"` for that suite and continue.
+
+#### Write the baseline file
+
+Before writing, add the file to the repo's local git exclude so intermediate `superpowers:executing-plans` commits do not accidentally include it:
+
+```bash
+grep -qxF '.co-dwerker.baseline-tests.json' .git/info/exclude 2>/dev/null \
+  || echo '.co-dwerker.baseline-tests.json' >> .git/info/exclude
+```
+
+(This only affects the local clone; the repo's `.gitignore` is not modified.)
+
+Write `.co-dwerker.baseline-tests.json` to the repo root:
+
+```json
+{
+  "captured_at": "<ISO 8601 UTC>",
+  "branch": "<current branch>",
+  "commit": "<git rev-parse HEAD>",
+  "issue_number": <ACTIVE_ISSUE>,
+  "suites": [
+    {
+      "name": "pytest",
+      "kind": "test",
+      "command": "uv run pytest",
+      "status": "completed",
+      "exit_code": 1,
+      "duration_seconds": 47,
+      "totals": { "passed": 142, "failed": 3, "errors": 0, "skipped": 5 },
+      "failing_tests": ["tests/test_foo.py::test_bar"],
+      "failing_tests_truncated": false
+    },
+    {
+      "name": "ruff",
+      "kind": "lint",
+      "command": "uv run ruff check .",
+      "status": "completed",
+      "exit_code": 0,
+      "duration_seconds": 2,
+      "totals": null,
+      "failing_tests": [],
+      "failing_tests_truncated": false
+    }
+  ]
+}
+```
+
+Field notes:
+
+- `kind`: `"test"` or `"lint"`. Linters share the same `suites[]` array but their `totals` and `failing_tests` fields are typically `null` / `[]` -- pass/fail is determined by `exit_code` alone (0 = clean, non-zero = issues found).
+- `status` enum: `completed` (suite ran to completion), `skipped` (suite was detected but the agent chose not to run it -- rare; not currently triggered by any rule in this skill, reserved for future use), `tooling_missing` (the command's binary was not found, e.g., `pytest: command not found`), `timeout` (cumulative 10-minute cap hit).
+- `totals`: required for `status: "completed"` test suites; `null` for lint suites, `tooling_missing`, `timeout`, or any partial-data case.
+- `failing_tests`: truncated to the first 50 entries per suite to keep the file small. When truncation occurred, set `failing_tests_truncated: true` so Step 5 Verify can warn the user that the baseline diff is best-effort rather than exhaustive.
+
+#### Surface a summary to the user (no gate)
+
+For a baseline with failures:
+
+> "Baseline test run complete. Capturing pre-existing state before any code changes:
+> - pytest: 142 passed, **3 failed**, 5 skipped (47s)
+> - ruff: clean
+> - black: clean
+>
+> Pre-existing failures are recorded in `.co-dwerker.baseline-tests.json`. These will be excluded from regression checks during verification. Proceeding to plan/implement."
+
+For a clean baseline:
+
+> "Baseline test run clean (pytest: 142 passed, ruff/black clean). Proceeding to plan/implement."
+
+For a skip:
+
+> "No test commands detected (checked `CLAUDE.md`, manifests). Skipping baseline. Verification will run whatever's available after implementation."
+
+Do not call `AskUserQuestion` here. Continue to Step 2.
+
+### 2. Plan
 
 Use the `Skill` tool to invoke `superpowers:writing-plans`.
 
 The writing-plans skill will create a detailed implementation plan from the design doc. Follow its full flow.
 
-### 2. Isolate
+### 3. Isolate
 
 Use the `Skill` tool to invoke `superpowers:using-git-worktrees` to create an isolated worktree for this work.
 
-Record the worktree path and branch name for the state file.
+Record the worktree path and branch name for the state file. If `.co-dwerker.baseline-tests.json` was written in Step 1, copy it into the worktree root and also add it to the worktree's local exclude so intermediate commits there do not pick it up:
 
-### 3. Implement
+```bash
+if [ -f .co-dwerker.baseline-tests.json ]; then
+  cp .co-dwerker.baseline-tests.json "$WORKTREE_PATH/.co-dwerker.baseline-tests.json"
+  grep -qxF '.co-dwerker.baseline-tests.json' "$WORKTREE_PATH/.git/info/exclude" 2>/dev/null \
+    || echo '.co-dwerker.baseline-tests.json' >> "$WORKTREE_PATH/.git/info/exclude"
+fi
+```
+
+Note: a linked worktree's `.git` is a file pointing to `<main>/.git/worktrees/<name>/`; that directory has its own `info/exclude`. The block above resolves that automatically because `$WORKTREE_PATH/.git/info/exclude` follows the gitdir indirection.
+
+### 4. Implement
 
 Use the `Skill` tool to invoke `superpowers:executing-plans` (or `superpowers:subagent-driven-development` if the plan has independent tasks).
 
 Follow the execution skill's full flow including TDD cycles and commits.
 
-### 4. Verify
+### 5. Verify
 
 Use the `Skill` tool to invoke `superpowers:verification-before-completion`.
 
@@ -475,9 +586,21 @@ The verification skill will:
 - Verify no regressions
 - Confirm all success criteria from the design doc are met
 
-If verification fails, fix the issues and re-verify. Do not proceed until clean.
+**Baseline diff:** If `.co-dwerker.baseline-tests.json` exists in the working directory, read it and compute the diff between current failures and the baseline by exact string match of test identifiers within the same `name` (suite name):
 
-### 4a. Local App Testing
+- **Pre-existing failures** (failing in both baseline and now) -- report to the user but do **not** block proceeding. These were broken before this work started.
+- **New failures** (failing now, passing in baseline) -- treat as **regressions** and fix before continuing. These are caused by the current work.
+- **Newly passing** (failing in baseline, passing now) -- report as a positive side effect.
+
+Linters (`kind: "lint"`) and any suite that the baseline marked `tooling_missing` or `timeout` are treated normally (no baseline comparison -- exit_code 0 means clean, non-zero must be fixed).
+
+If the baseline marked any suite's `failing_tests_truncated: true`, warn the user: "Baseline failing-tests list was truncated to 50 entries for that suite; a 'new failure' below may actually be a pre-existing failure that didn't fit in the truncated list. Verify before treating it as a regression."
+
+**If `.co-dwerker.baseline-tests.json` does not exist** (Step 1 detected no tests, or the workflow is running in a repo that lacked the baseline step in a prior session): treat all current test failures as regressions and fix before proceeding. There is no pre-existing-failures carve-out without a baseline.
+
+If verification fails on **new** failures, fix the issues and re-verify. Do not proceed until clean. Pre-existing failures alone do not block.
+
+### 5a. Local App Testing
 
 After automated tests pass, attempt to run the application locally to verify it starts and responds correctly. This catches configuration errors, missing environment variables, and runtime issues that unit tests miss.
 
@@ -506,7 +629,7 @@ After automated tests pass, attempt to run the application locally to verify it 
 - Report results to the user: what was tested, what worked, what failed
 - Do NOT block on this step -- if local testing fails but unit tests pass, note the failure and continue (the user decides whether to fix it before PR)
 
-### 5. Changelog
+### 6. Changelog
 
 Update `CHANGELOG.md` and `RELEASE_NOTES.md` per the project's CLAUDE.md conventions:
 - CHANGELOG.md: line-by-line technical changes with reasons
@@ -514,7 +637,7 @@ Update `CHANGELOG.md` and `RELEASE_NOTES.md` per the project's CLAUDE.md convent
 
 Commit changelog updates separately from implementation code.
 
-### 6. Create PR
+### 7. Create PR
 
 ```bash
 gh pr create --title "<concise title>" --body "$(cat <<'EOF'
@@ -533,7 +656,7 @@ EOF
 )"
 ```
 
-### 7. Review, Address Findings, and User Approval
+### 8. Review, Address Findings, and User Approval
 
 Use the `Skill` tool to invoke `co-dwerker:pr-review`.
 
@@ -619,6 +742,11 @@ git branch -d "$BRANCH_NAME" 2>/dev/null
 
 # Remove worktree if one was created
 git worktree remove "$WORKTREE_PATH" 2>/dev/null
+
+# Remove the baseline test capture from both worktree and main repo root
+# (ephemeral per-issue artifact from Phase 3 Step 1, copied into worktree in Phase 3 Step 3)
+rm -f "$WORKTREE_PATH/.co-dwerker.baseline-tests.json" 2>/dev/null
+rm -f .co-dwerker.baseline-tests.json
 
 # Clean up docs repo clone if we created one
 # (only if it was freshly cloned for this session)
