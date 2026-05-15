@@ -2,6 +2,22 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [co-dwerker v0.3.4] - 2026-05-15
+
+### Added
+- **Phase 3 Step 1b — Baseline Local App**: New step in the Execute phase of `/co-dwerker:work`. Runs after Step 1 Baseline Tests and before Plan. Detects runnable apps (Azure Functions via `host.json`, .NET via `Program.cs`/`Startup.cs`, Python web via `app.py`/`manage.py` and framework signals, Node via `package.json` start script, Docker Compose via `docker-compose.yml`, plus `CLAUDE.md` override). Boots the app in the current working directory and captures: boot status (7-value enum including `started`, `failed_to_start`, `timeout`, `crashed_during_idle`, `preflight_failed`), boot duration, ready-signal match, HTTP probe results, log errors and warnings observed during a 90-second idle watch window. Results are written to `.co-dwerker.baseline-localapp.json`.
+- **Log normalization pipeline**: Before storing log entries in the baseline, raw log lines are normalized (strip ANSI codes, ISO 8601 and bracket timestamps, UUIDs, long hex strings, PIDs in common formats, port numbers in URLs, memory addresses, whitespace collapse). Both raw and normalized forms are kept in the schema so the user-facing summary shows real text but the Step 5a diff matches on stable normalized forms.
+- **Multi-line entry capture**: Python tracebacks (`Traceback (most recent call last):` + indented frames), .NET unhandled exceptions (`Unhandled exception` / `System.X.Exception:` + stack frames), and .NET ASP.NET error blocks are captured as single multi-line entries rather than as fragmented lines.
+- **Step 5a baseline diff**: Local App Testing now reads `.co-dwerker.baseline-localapp.json` and classifies post-implementation issues as pre-existing (don't block), new errors (block as regressions), new warnings (informational), resolved (positive side effect), with separate boot-status comparison treating `started`/`started_no_signal` as equivalent healthy and `failed_to_start`/`timeout`/`crashed_during_idle`/`preflight_failed` as equivalent boot-failure.
+- **`AskUserQuestion` gate on baseline boot failure**: This is the one place v0.3.4 diverges from v0.3.3's capture-and-continue rule. If the unmodified branch cannot boot the app cleanly, Step 1b stops with a 3-option prompt (fix-environment-and-retry / skip-baseline-for-this-session / cancel-session) because without a successful boot there is nothing meaningful to compare against later.
+- **Cumulative 15-minute cap** across all detected apps. After cap, remaining apps are marked `timeout` and the gate behavior applies.
+- **`plugins/co-dwerker/references/baseline-localapp.md`**: NEW reference file with the full detail for Step 1b (detection, preflight, boot, idle watch, log capture, normalization, schema, gate, edge cases).
+
+### Changed
+- **Skill-file organization (work.md slimmed)**: Per skill-creator's <500-line guideline and explicit user preference, the detailed instructions for BOTH baseline steps (Step 1 and Step 1b) are extracted to `plugins/co-dwerker/references/baseline-tests.md` (NEW — retroactive extraction of v0.3.3 Step 1 content) and `plugins/co-dwerker/references/baseline-localapp.md` (NEW). `commands/work.md` keeps brief Step 1 / Step 1b stubs that point to these references, plus the downstream diff treatment in Step 5 / Step 5a inline where it is used. Net result: `work.md` stays at 790 lines despite adding a major new feature (was 806 in v0.3.3 with only the test baseline; without extraction it would have grown to ~950+).
+- **Phase 3 Step 3 Isolate**: the copy-to-worktree block now handles BOTH `.co-dwerker.baseline-tests.json` and `.co-dwerker.baseline-localapp.json` via a single loop. Same `.git/info/exclude` propagation rules apply to both files.
+- **Phase 5 Step 6 Clean Up**: extended to `rm -f` `.co-dwerker.baseline-localapp.json` from both worktree path and main repo root.
+
 ## [co-dwerker v0.3.3] - 2026-05-15
 
 ### Added

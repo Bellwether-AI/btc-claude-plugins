@@ -1,5 +1,32 @@
 # Release Notes
 
+## co-dwerker v0.3.4
+
+### What's New
+
+**Pre-existing app errors no longer get blamed on you.** Before any coding starts, `/co-dwerker:work` now also boots your application locally and captures which errors and warnings were already present on the unmodified branch — extending the test-baseline idea from v0.3.3 to local app behavior. After implementation, the local-app testing step compares the new run against that baseline, so it can tell regressions (caused by this work) from pre-existing issues (already broken).
+
+Detection covers Azure Functions, .NET, Python web frameworks (Flask, Django, FastAPI, uvicorn, gunicorn), Node.js apps with `npm start`, and Docker Compose. Your repo's `CLAUDE.md` can override the detected command if you have a custom way to run locally.
+
+The baseline watches the app for 90 seconds after it boots so background timers, scheduled functions, and queue consumers have time to surface their own errors. Log lines are normalized before diffing (timestamps, UUIDs, PIDs stripped) so a per-request ID doesn't show up as a "new" error every time.
+
+**Cleaner skill organization.** As part of this release, the detailed instructions for both baseline steps (Test Baseline from v0.3.3 and the new Local App Baseline) moved out of the main `work.md` skill file into reference files (`references/baseline-tests.md` and `references/baseline-localapp.md`). This makes `work.md` less likely to overwhelm the LLM agent reading it, reducing the risk of phase-by-phase steps getting skipped amidst surrounding context.
+
+### Behavior Changes
+
+- Phase 3 (Execute) now has a Step 1b Baseline Local App between Step 1 Baseline Tests and Step 2 Plan.
+- One workflow gate: if the unmodified branch can't boot the app (port conflict, missing config, crash), Step 1b stops and asks you to fix-and-retry / skip-baseline / cancel. This is intentional — without a successful boot there is nothing meaningful to compare against later. The test baseline still uses capture-and-continue (pre-existing test failures don't gate); only the local-app boot failure does.
+- A new file `.co-dwerker.baseline-localapp.json` is written to the repo root during Phase 3 and removed in Phase 5 cleanup. It is added to `.git/info/exclude` automatically so intermediate commits don't pick it up.
+- The detection list in the existing Local App Testing step (Step 5a) is unchanged, but Step 5a's reporting is now baseline-aware.
+
+### Known Issues
+
+- 15-minute cumulative cap across all detected apps. Slow boots (e.g., .NET with cold MSBuild) may eat into the cap. The gate behavior surfaces this clearly when it happens.
+- The boot-failure gate is sensitive to local environment state. If your workflow assumes the app won't boot locally (e.g., the app requires Azure-only services), use the "skip baseline for this session" option from the gate.
+- Normalization regex strips port numbers in URLs. If your app emits error messages where the specific port is load-bearing, the diff may treat semantically-different lines as equivalent. Raw lines are still preserved in the schema for manual inspection.
+
+---
+
 ## co-dwerker v0.3.3
 
 ### What's New
