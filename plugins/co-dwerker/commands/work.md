@@ -464,13 +464,13 @@ In this order, stopping when something is found:
    - `*.csproj` / `*.sln` -> `dotnet test`
    - `*.Tests.ps1` -> `Invoke-Pester`
    - `go.mod` -> `go test ./...`
-3. **Nothing detected** -- skip with `reason: "no_tests_detected"`, tell the user, continue to Step 2.
+3. **Nothing detected** -- do **not** write `.co-dwerker.baseline-tests.json`. Tell the user with the "skip" summary template below and continue to Step 2. Downstream Step 5 treats a missing baseline file as "no baseline available" (see Step 5 for the corresponding behavior).
 
 #### Run each detected suite
 
 Run all detected suites independently. One suite failing does **not** block subsequent suites. Capture for each: command, exit code, totals (passed/failed/errors/skipped), duration in seconds, and a list of failing test identifiers (truncate to the first 50 per suite).
 
-Cap cumulative wall-clock time at 10 minutes. If exceeded, mark remaining suites `status: "timeout"` and continue.
+Cap **cumulative** wall-clock time across all suites combined at 10 minutes (suite execution only; detection and parse time are not counted). If a single suite is still running when the cap is reached, terminate it, record its `status: "timeout"` with `null` totals (or whatever partial totals were captured), then mark any remaining undetected suites `status: "timeout"` with `null` totals and continue. Per-suite timeouts are not enforced -- only the cumulative cap.
 
 If a command's tooling is missing (e.g., `pytest: command not found`), record `status: "tooling_missing"` for that suite and continue.
 
@@ -496,18 +496,36 @@ Write `.co-dwerker.baseline-tests.json` to the repo root:
   "suites": [
     {
       "name": "pytest",
+      "kind": "test",
       "command": "uv run pytest",
       "status": "completed",
       "exit_code": 1,
       "duration_seconds": 47,
       "totals": { "passed": 142, "failed": 3, "errors": 0, "skipped": 5 },
-      "failing_tests": ["tests/test_foo.py::test_bar"]
+      "failing_tests": ["tests/test_foo.py::test_bar"],
+      "failing_tests_truncated": false
+    },
+    {
+      "name": "ruff",
+      "kind": "lint",
+      "command": "uv run ruff check .",
+      "status": "completed",
+      "exit_code": 0,
+      "duration_seconds": 2,
+      "totals": null,
+      "failing_tests": [],
+      "failing_tests_truncated": false
     }
   ]
 }
 ```
 
-Possible `status` values per suite: `completed`, `skipped`, `tooling_missing`, `timeout`.
+Field notes:
+
+- `kind`: `"test"` or `"lint"`. Linters share the same `suites[]` array but their `totals` and `failing_tests` fields are typically `null` / `[]` -- pass/fail is determined by `exit_code` alone (0 = clean, non-zero = issues found).
+- `status` enum: `completed` (suite ran to completion), `skipped` (suite was detected but the agent chose not to run it -- rare; not currently triggered by any rule in this skill, reserved for future use), `tooling_missing` (the command's binary was not found, e.g., `pytest: command not found`), `timeout` (cumulative 10-minute cap hit).
+- `totals`: required for `status: "completed"` test suites; `null` for lint suites, `tooling_missing`, `timeout`, or any partial-data case.
+- `failing_tests`: truncated to the first 50 entries per suite to keep the file small. When truncation occurred, set `failing_tests_truncated: true` so Step 5 Verify can warn the user that the baseline diff is best-effort rather than exhaustive.
 
 #### Surface a summary to the user (no gate)
 
@@ -540,7 +558,17 @@ The writing-plans skill will create a detailed implementation plan from the desi
 
 Use the `Skill` tool to invoke `superpowers:using-git-worktrees` to create an isolated worktree for this work.
 
-Record the worktree path and branch name for the state file. If `.co-dwerker.baseline-tests.json` was written in Step 1, copy it into the worktree root so the verification step (Step 5) can read it from the same working directory the implementation is happening in.
+Record the worktree path and branch name for the state file. If `.co-dwerker.baseline-tests.json` was written in Step 1, copy it into the worktree root and also add it to the worktree's local exclude so intermediate commits there do not pick it up:
+
+```bash
+if [ -f .co-dwerker.baseline-tests.json ]; then
+  cp .co-dwerker.baseline-tests.json "$WORKTREE_PATH/.co-dwerker.baseline-tests.json"
+  grep -qxF '.co-dwerker.baseline-tests.json' "$WORKTREE_PATH/.git/info/exclude" 2>/dev/null \
+    || echo '.co-dwerker.baseline-tests.json' >> "$WORKTREE_PATH/.git/info/exclude"
+fi
+```
+
+Note: a linked worktree's `.git` is a file pointing to `<main>/.git/worktrees/<name>/`; that directory has its own `info/exclude`. The block above resolves that automatically because `$WORKTREE_PATH/.git/info/exclude` follows the gitdir indirection.
 
 ### 4. Implement
 
@@ -558,13 +586,17 @@ The verification skill will:
 - Verify no regressions
 - Confirm all success criteria from the design doc are met
 
-**Baseline diff:** If `.co-dwerker.baseline-tests.json` exists in the working directory, read it and compute the diff between current failures and the baseline:
+**Baseline diff:** If `.co-dwerker.baseline-tests.json` exists in the working directory, read it and compute the diff between current failures and the baseline by exact string match of test identifiers within the same `name` (suite name):
 
 - **Pre-existing failures** (failing in both baseline and now) -- report to the user but do **not** block proceeding. These were broken before this work started.
 - **New failures** (failing now, passing in baseline) -- treat as **regressions** and fix before continuing. These are caused by the current work.
 - **Newly passing** (failing in baseline, passing now) -- report as a positive side effect.
 
-Linters and any suite that the baseline marked `tooling_missing` or `timeout` are treated normally (no baseline comparison).
+Linters (`kind: "lint"`) and any suite that the baseline marked `tooling_missing` or `timeout` are treated normally (no baseline comparison -- exit_code 0 means clean, non-zero must be fixed).
+
+If the baseline marked any suite's `failing_tests_truncated: true`, warn the user: "Baseline failing-tests list was truncated to 50 entries for that suite; a 'new failure' below may actually be a pre-existing failure that didn't fit in the truncated list. Verify before treating it as a regression."
+
+**If `.co-dwerker.baseline-tests.json` does not exist** (Step 1 detected no tests, or the workflow is running in a repo that lacked the baseline step in a prior session): treat all current test failures as regressions and fix before proceeding. There is no pre-existing-failures carve-out without a baseline.
 
 If verification fails on **new** failures, fix the issues and re-verify. Do not proceed until clean. Pre-existing failures alone do not block.
 
@@ -711,7 +743,9 @@ git branch -d "$BRANCH_NAME" 2>/dev/null
 # Remove worktree if one was created
 git worktree remove "$WORKTREE_PATH" 2>/dev/null
 
-# Remove the baseline test capture (ephemeral per-issue artifact from Phase 3 Step 1)
+# Remove the baseline test capture from both worktree and main repo root
+# (ephemeral per-issue artifact from Phase 3 Step 1, copied into worktree in Phase 3 Step 3)
+rm -f "$WORKTREE_PATH/.co-dwerker.baseline-tests.json" 2>/dev/null
 rm -f .co-dwerker.baseline-tests.json
 
 # Clean up docs repo clone if we created one
