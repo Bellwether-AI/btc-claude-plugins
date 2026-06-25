@@ -1,0 +1,8 @@
+{
+  "name": "azure-appservice-cert-rollout",
+  "version": "0.1.0",
+  "description": "End-to-end workflow for rolling out a Bring-Your-Own-Certificate (BYOC) TLS certificate to Azure App Services across one or more subscriptions in a tenant. Built around three hard invariants — PFX chain validation before any upload, explicit tenant + subscription scope confirmation before any write, and manual one-step-at-a-time execution (no batch loops). Covers tenant scope confirmation, PFX chain validation with portable openssl script, Resource Graph discovery across the approved subscription set, plan presentation with operator approval, pilot, manual bulk execution with stop-on-first-failure, inline old-cert cleanup with sibling-binding safety pre-check, final Resource Graph verification sweep, and a redacted markdown work record. Ships one skill (azure-appservice-cert-rollout) with five references: chain-check script, Resource Graph KQL queries, per-app CLI procedure with rollback paths, App Service Managed Certificate handling, and work-record template.",
+  "author": {
+    "name": "Bellwether AI"
+  }
+}
