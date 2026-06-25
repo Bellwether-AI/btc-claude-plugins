@@ -2,6 +2,22 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [azure-appservice-cert-rollout v0.1.0] - 2026-06-25
+
+### Added
+- **New plugin `azure-appservice-cert-rollout`** at `plugins/azure-appservice-cert-rollout/`. Ships one skill — `azure-appservice-cert-rollout` — codifying a production-safe BYOC TLS certificate rollout workflow for Azure App Services across one or many subscriptions in a tenant. Built from two real-world rollout sessions (May 2026 initial cross-subscription deploy; June 2026 chain-fix follow-up after a leaf-only PFX was discovered to have been uploaded). Designed for the MSP / multi-client case.
+- **Three hard invariants encoded into the skill**: (1) PFX chain validation BEFORE upload via portable openssl script, (2) tenant + subscription scope confirmation gate BEFORE any write, (3) manual one-step-at-a-time execution — separate tool calls per step, no batch loops, stop-on-first-failure.
+- **9-step workflow**: tenant scope confirmation → input gathering (with `PFX_PWD` env var pattern to keep password off argv and out of shell history) → PFX validation gate → Resource Graph discovery → plan presentation gate → pilot → bulk execution with explicit post-bind chain-probe rollback path → inline old-cert cleanup with sibling-binding safety pre-check → final Resource Graph verification sweep → redacted markdown work record.
+- **`check_pfx.sh`** — portable PFX chain validation script. Reads password from `PFX_PWD` env var via `openssl -passin env:PFX_PWD` (never argv). Uses awk for per-certificate splitting to avoid GNU-only `csplit` flags that silently fail on macOS BSD. Walks the chain validating each child issuer matches its parent subject. Exits 1 if chain is leaf-only (the silent-chain-less-upload failure mode), 2 if PFX can't be parsed, 3 on other validation failures, 0 on success. Optional second arg checks SAN coverage against an expected hostname suffix.
+- **`resource-graph-queries.md`** — four KQL discovery queries plus two final-verification queries. Uses `mv-expand` + `endswith` patterns (rather than `tostring()` + `contains`) to avoid substring-match false positives on short domain suffixes. Includes the subscription-list resolution guidance with explicit operator-eyeball approval before any name-prefix match is trusted.
+- **`per-app-procedure.md`** — five-step per-app sequence (account-set → upload → bind → openssl chain probe → delete-old) with the explicit post-bind chain-probe failure rollback procedure (re-bind to prior thumbprint, do not run the delete), pre-delete safety check (query for any sibling app in the same webspace still bound to the old thumbprint before deleting), and the canonical "stop on first failure" invariant.
+- **`managed-certs.md`** — recognizing App Service Managed Certificates (which `az webapp config ssl delete` cannot touch despite Resource Graph showing them) and the required pre-check before any `az resource delete` against a Managed Cert.
+- **`work-record-template.md`** — structure for the Step 9 markdown work record, including required PFX-password redaction in any echoed commands and a plain-text-paste-friendly summary block at the end.
+- **README + plugin.json** registered in `.claude-plugin/marketplace.json`.
+
+### Notes
+- Skill went through a 3-reviewer cycle (design / discoverability, technical correctness, operational safety) with all critical and high-severity findings addressed before initial release. Notable issues caught and fixed during review: GNU-only csplit flags in the chain-check script (would have silently turned the entire chain check into a no-op on the operator's macOS workstation); PFX password leaking via argv into shell history; tenant-scope confirmation present as suggestion rather than gate; the "one step at a time" rule worded as persuasive prose rather than a hard guardrail.
+
 ## [co-dwerker v0.3.4] - 2026-05-15
 
 ### Added

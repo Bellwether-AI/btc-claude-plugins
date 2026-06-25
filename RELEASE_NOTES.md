@@ -1,5 +1,43 @@
 # Release Notes
 
+## azure-appservice-cert-rollout v0.1.0
+
+### What's New
+
+A new plugin for rolling out a Bring-Your-Own-Certificate (BYOC) TLS certificate to Azure App Services across one or many subscriptions in a tenant. Designed for the MSP / multi-client case: one operator with access to many tenants and subscriptions, rolling out a renewed wildcard or hostname cert across an arbitrary set of App Services, with production-safety bias turned all the way up.
+
+The plugin ships one skill — `azure-appservice-cert-rollout` — that auto-triggers on phrases like "renew the wildcard cert across all our Azure web apps", "push the new PFX to the App Services", "fix the cert chain on the App Service", "the GoDaddy/DigiCert cert is expiring", or mentions of `az webapp config ssl`.
+
+### Why it exists
+
+The straightforward Azure CLI sequence for renewing an uploaded cert (`az webapp config ssl upload` → `bind` → `delete`) has three real failure modes:
+
+1. **Silent chain-less PFX.** `az webapp config ssl upload` accepts a leaf-only PFX without warning. Browsers cache common intermediates so the missing chain isn't visible from the operator's laptop, but mobile apps, headless clients, and minimal-trust-store environments fail TLS validation.
+2. **Wrong tenant / subscription scope.** MSP operators have CLI access to many clients' tenants. One mis-targeted command can rebind certs in the wrong client's environment.
+3. **Untested batch loops.** Writing a shell loop to "do all 20 apps at once" adds a new failure surface (shell quoting, set-e behavior, error swallowing) separate from whether the per-resource operation works.
+
+This plugin encodes defenses against all three.
+
+### What it does
+
+A 9-step workflow with three operator gates:
+
+1. **Tenant + scope confirmation** (gate) — confirm signed-in tenant matches operator intent, resolve subscription scope to a concrete list, explicit approval.
+2. **Gather remaining inputs** — PFX path, password via `PFX_PWD` env var (never argv), friendly name.
+3. **PFX validation** (gate) — chain check + SAN coverage + validity via portable openssl script.
+4. **Discovery** — Resource Graph queries enumerate hostnames, bindings, ASP SKUs, cert clutter.
+5. **Plan presentation** (gate) — categorized table, explicit approval before any write.
+6. **Pilot** — one app, full sequence, pause for review.
+7. **Bulk execution** — same sequence per app, separate tool calls per step, stop-on-first-failure, explicit post-bind rollback path.
+8. **Inline cleanup** — delete prior cert from each webspace with sibling-binding pre-check.
+9. **Final verification** — re-run Resource Graph queries, repeat chain probe on a sample, write redacted markdown work record.
+
+### Known Issues
+
+- `check_pfx.sh` assumes openssl 1.x or 3.x is on PATH. Tested on macOS BSD and Linux GNU. Not tested in Azure Cloud Shell.
+- Operator must run from a workstation where openssl can shell out and parse the PFX. There is no fallback path that uses Azure Key Vault or any other in-cloud mechanism.
+- The "one step at a time" rule is binding on the AI executor — a future Claude that decides to write a loop "because the operator approved the plan and this is just 20 iterations of a verified pattern" will be violating the skill's invariants. Hard-rule language is present but not externally enforced.
+
 ## co-dwerker v0.3.4
 
 ### What's New
