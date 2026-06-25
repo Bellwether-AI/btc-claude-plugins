@@ -28,12 +28,12 @@ Brief reason — renewal of an expiring cert, fix for a chain issue, rekey, etc.
 | Thumbprint | Label | Disposition |
 |---|---|---|
 | `<new-thumbprint>` | NEW (target) | Issuer, validity window, friendly name in App Service, source PFX filename |
-| `<old-thumbprint>` | PRIOR (to remove) | Issuer, validity window, friendly name |
+| `<old-thumbprint>` | OLD (to remove) | Issuer, validity window, friendly name |
 | `<other-thumbprint>` | STALE (cleaned) | (if applicable) |
 
 ## 3. Pre-rollout state
 
-Summary of the discovery findings from Step 3: how many in-scope hostnames, how many on target, how many on prior, intentional Disabled, ASP SKU summary, stale clutter found.
+Summary of the discovery findings from Step 3: how many in-scope hostnames, how many on target, how many on old, intentional Disabled, ASP SKU summary, stale clutter found.
 
 ## 4. Procedure executed
 
@@ -43,8 +43,8 @@ The exact sequence applied per App Service, with `--certificate-password '<REDAC
 
 | # | Subscription | App Service | Resource Group | Hostname | Pre-state | Action | Post-state |
 |---|---|---|---|---|---|---|---|
-| 1 | <sub> | <app> | <rg> | <hostname> | <prior tp> | Upload+Bind+Verify+Delete | ✅ new tp |
-| 2 | ... | ... | ... | ... | ... | Delete prior only | ✅ |
+| 1 | <sub> | <app> | <rg> | <hostname> | <old tp> | Upload+Bind+Verify+Delete | ✅ new tp |
+| 2 | ... | ... | ... | ... | ... | Delete old only | ✅ |
 
 Or split into categorized sub-tables (full renewal / cleanup-only / no-action) if that's clearer.
 

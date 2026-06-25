@@ -8,7 +8,17 @@ All queries take a `<sub-list>` placeholder — a comma-separated list of subscr
 '5690ccb1-dc84-488f-9400-e28c2396c6d9','4cc9fc9a-a368-43a0-b7ea-4f25f6d512b0',...
 ```
 
+And a `<suffix>` placeholder — the domain suffix without a leading dot, e.g. `example.com`. The queries use `endswith '.<suffix>'` (with a literal leading dot) to make sure `example.com` doesn't accidentally match `notexample.com`.
+
 Prerequisite: the `resource-graph` extension (`az extension add --name resource-graph`).
+
+**Always include `--first 1000`** (or higher if needed) in the `az graph query` invocation to avoid silent truncation of large result sets:
+
+```bash
+az graph query --first 1000 -q "<KQL here>" --query "data" -o table
+```
+
+Resource Graph's default page size is small and the CLI does not warn you when results are truncated — you just get fewer rows than exist.
 
 How to resolve subscription scope to a sub-list:
 - If the operator gave a name prefix (e.g. "all subs starting with `ROCKETCLAIMS`"), run `az account list --query "[?starts_with(name,'<prefix>')].id" -o tsv` and join with commas+quotes.
@@ -26,7 +36,7 @@ Resources
 | where type =~ 'microsoft.web/sites'
 | where subscriptionId in (<sub-list>)
 | mv-expand h = properties.hostNames
-| where tostring(h) endswith '<suffix>'
+| where tostring(h) endswith '.<suffix>'
 | summarize hostNames = make_set(tostring(h)) by subscriptionId,
                                                  rg = resourceGroup,
                                                  app = name,
@@ -49,7 +59,7 @@ Resources
 | where type =~ 'microsoft.web/sites'
 | where subscriptionId in (<sub-list>)
 | mv-expand sslState = properties.hostNameSslStates
-| where sslState.name endswith '<suffix>'
+| where tostring(sslState.name) endswith '.<suffix>'
 | project subscriptionId,
           rg = resourceGroup,
           app = name,
@@ -60,12 +70,12 @@ Resources
 | order by host asc
 ```
 
-Add a category column to make the table easier to read at a glance — pass the target / known-prior / known-stale thumbprints:
+Add a category column to make the table easier to read at a glance — pass the target / known-old / known-stale thumbprints:
 
 ```kql
 | extend status = case(
     tostring(sslState.thumbprint) == '<target-thumbprint>', 'NEW',
-    tostring(sslState.thumbprint) == '<prior-thumbprint>', 'PRIOR',
+    tostring(sslState.thumbprint) == '<old-thumbprint>', 'OLD',
     tostring(sslState.thumbprint) == '', 'NO_TLS',
     strcat('OTHER:', substring(tostring(sslState.thumbprint), 0, 8)))
 ```
@@ -112,12 +122,12 @@ Resources
 | order by rg asc, certName asc
 ```
 
-Adding labels for the target / prior / stale thumbprints makes the operator-facing table immediately scannable:
+Adding labels for the target / old / stale thumbprints makes the operator-facing table immediately scannable:
 
 ```kql
 | extend label = case(
     thumbprint == '<target-thumbprint>', 'TARGET (new)',
-    thumbprint == '<prior-thumbprint>', 'PRIOR (to remove)',
+    thumbprint == '<old-thumbprint>', 'OLD (to remove)',
     thumbprint == '<other-stale-thumbprint>', 'STALE (clean up)',
     strcat('OTHER:', substring(thumbprint, 0, 8)))
 ```
@@ -138,7 +148,7 @@ Resources
 | where type =~ 'microsoft.web/sites'
 | where subscriptionId in (<sub-list>)
 | mv-expand sslState = properties.hostNameSslStates
-| where sslState.name endswith '<suffix>'
+| where tostring(sslState.name) endswith '.<suffix>'
 | extend status = iff(tostring(sslState.thumbprint) == '<target-thumbprint>', 'OK',
                   iff(tostring(sslState.thumbprint) == '', 'NO_TLS', 'WRONG'))
 | project status,
@@ -158,7 +168,7 @@ Resources
 | where type =~ 'microsoft.web/certificates'
 | where subscriptionId in (<sub-list>)
 | where tostring(properties.thumbprint) in (
-    '<prior-thumbprint>',
+    '<old-thumbprint>',
     '<other-thumbprint-to-clean>'
     /* add more as needed */
   )
@@ -169,12 +179,12 @@ Expected outcome: zero rows. Any row that returns is a cert resource that didn't
 
 ---
 
-## Tip: how to render in Bash output
+## Tip: rendering output
 
-`az graph query` returns JSON by default. For human-readable tables in the terminal, append `--query "data" -o table`:
+`az graph query` returns JSON by default. For human-readable tables in the terminal, append `--query "data" -o table`. Works the same on macOS / Linux / Windows since `az` is cross-platform.
 
 ```bash
 az graph query --first 1000 -q "<KQL above>" --query "data" -o table
 ```
 
-For long output you may need `--first 1000` (or higher) to avoid truncation.
+`--first 1000` is repeated here as a reminder — it's already shown on every query above.

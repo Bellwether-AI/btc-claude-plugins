@@ -32,11 +32,20 @@ A 9-step workflow with three operator gates:
 8. **Inline cleanup** — delete prior cert from each webspace with sibling-binding pre-check.
 9. **Final verification** — re-run Resource Graph queries, repeat chain probe on a sample, write redacted markdown work record.
 
+### Platform support
+
+The chain-check ships in two equivalent forms:
+
+- `check_pfx.sh` — bash + openssl, for macOS / Linux / WSL / Git Bash.
+- `check_pfx.ps1` — PowerShell 5.1+ / 7+, for Windows or cross-platform. Uses .NET's native cert handling, no openssl dependency.
+
+Both scripts read the PFX password from the `PFX_PWD` environment variable, exit with the same codes (0=good, 1=chain-less, 2=parse error, 3=other validation failure), and produce equivalent diagnostic output. Operator picks whichever shell they're comfortable in.
+
 ### Known Issues
 
-- `check_pfx.sh` assumes openssl 1.x or 3.x is on PATH. Tested on macOS BSD and Linux GNU. Not tested in Azure Cloud Shell.
-- Operator must run from a workstation where openssl can shell out and parse the PFX. There is no fallback path that uses Azure Key Vault or any other in-cloud mechanism.
+- Operator must run from a workstation. There is no fallback path that uses Azure Key Vault or any other in-cloud mechanism.
 - The "one step at a time" rule is binding on the AI executor — a future Claude that decides to write a loop "because the operator approved the plan and this is just 20 iterations of a verified pattern" will be violating the skill's invariants. Hard-rule language is present but not externally enforced.
+- `check_pfx.ps1` smoke-tested on macOS PowerShell 7; Windows native PowerShell 5.1/7 are expected to work but not yet validated on hardware.
 
 ## co-dwerker v0.3.4
 

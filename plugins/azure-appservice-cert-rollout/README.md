@@ -43,11 +43,22 @@ The pilot pause (Step 5) is a soft checkpoint, not a hard gate — operator deci
 ## What's in the skill
 
 - `skills/azure-appservice-cert-rollout/SKILL.md` — main workflow, 9 steps, hard invariants up front.
-- `skills/azure-appservice-cert-rollout/references/check_pfx.sh` — portable PFX chain validation (reads password from `PFX_PWD` env var, uses awk for per-cert splitting so it works on macOS BSD and Linux GNU without coreutils).
-- `skills/azure-appservice-cert-rollout/references/resource-graph-queries.md` — all KQL queries for discovery and verification, with subscription-list resolution guidance.
-- `skills/azure-appservice-cert-rollout/references/per-app-procedure.md` — full per-app CLI sequence with explicit rollback paths and the sibling-binding pre-delete check.
+- `skills/azure-appservice-cert-rollout/references/check_pfx.sh` — PFX chain validation for **macOS / Linux / WSL / Git Bash**. Reads password from `PFX_PWD` env var, uses awk for per-cert splitting (no GNU-only csplit flags), shells out to openssl.
+- `skills/azure-appservice-cert-rollout/references/check_pfx.ps1` — PFX chain validation for **Windows PowerShell 5.1+ / cross-platform PowerShell 7+**. Same exit codes, native .NET `X509Certificate2Collection` so no openssl dependency. SAN parser handles both Windows-style (`DNS Name=...`) and macOS-style (`DNS:...`) SAN formats.
+- `skills/azure-appservice-cert-rollout/references/resource-graph-queries.md` — all KQL queries for discovery and verification, with subscription-list resolution guidance and `--first 1000` on every query (avoids silent truncation on large tenants).
+- `skills/azure-appservice-cert-rollout/references/per-app-procedure.md` — full per-app CLI sequence with explicit rollback paths, the sibling-binding pre-delete check, and PFX_PWD env-var setup for bash / PowerShell / cmd.exe.
 - `skills/azure-appservice-cert-rollout/references/managed-certs.md` — recognizing and (carefully) cleaning up App Service Managed Certificates.
 - `skills/azure-appservice-cert-rollout/references/work-record-template.md` — structure for the Step 9 markdown work record, including required redaction guidance and a paste-friendly plain-text summary block.
+
+## Platform support
+
+Tested on:
+
+- **macOS** (Sequoia / Apple Silicon): bash + PowerShell 7 both pass smoke tests against known-good and known-chain-less PFXes.
+- Linux (Ubuntu): bash script tested. PowerShell 7 expected to work identically to macOS.
+- Windows: PowerShell 5.1+ and 7+ expected to work; not yet smoke-tested.
+
+Operator picks whichever shell they're comfortable in. Both scripts exit with the same codes and produce equivalent diagnostic output.
 
 ## Prerequisites
 
@@ -55,8 +66,9 @@ On the operator's workstation:
 
 - Azure CLI (`az`) signed in to the right tenant
 - `resource-graph` extension installed: `az extension add --name resource-graph`
-- `openssl` (any version — the chain check script tries `-legacy` retry for older PFXes)
-- Standard POSIX tools: `awk`, `find`, `sed`, `grep`, `date` (BSD or GNU)
+- One of:
+  - **bash + openssl + standard POSIX tools** (`awk`, `find`, `sed`, `grep`, `date`) for the `.sh` chain-check, OR
+  - **PowerShell 5.1+ or PowerShell 7+** for the `.ps1` chain-check (no openssl needed — uses .NET's native cert handling)
 
 Operator RBAC needs the following on each target App Service Plan's resource group:
 - `Microsoft.Web/sites/read` (for discovery)

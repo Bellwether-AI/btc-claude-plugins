@@ -4,6 +4,17 @@ All notable changes to the btc-claude-plugins repository.
 
 ## [azure-appservice-cert-rollout v0.1.0] - 2026-06-25
 
+### Post-review revisions (during initial PR review cycle)
+- **Added `check_pfx.ps1`** — PowerShell port of the chain-check script for Windows operators. Uses .NET's native `X509Certificate2Collection` (no openssl dependency) and the SAN parser handles both Windows (`DNS Name=...`) and macOS/Linux (`DNS:...`) format variants. Works with PowerShell 5.1+ on Windows and PowerShell 7+ cross-platform. Smoke-tested on macOS against known-good and known-chain-less PFXes.
+- **Fixed PFX_PWD env-var leak in SKILL.md Step 2 example** — was showing `PFX_PWD='...' bash script.sh` (still visible to `ps`) rather than the correct two-step pattern (export in a separate command, then call the script which inherits from env).
+- **Step 1 now documents env-var setup for all three shells** — bash/zsh, PowerShell, and cmd.exe — so a Windows operator using PowerShell knows to use `$env:PFX_PWD = '...'` rather than `export`.
+- **KQL `endswith '<suffix>'` tightened to `endswith '.<suffix>'`** with a literal leading dot, in every discovery and verification query. Without the dot, `endswith 'example.com'` would also match `notexample.com`. Matching anchor added in the openssl SAN coverage check in both chain-check scripts for the same reason.
+- **`--first 1000` added to every in-body Resource Graph query** in `resource-graph-queries.md`, not just the "tip" section. Avoids silent result truncation on tenants with 200+ App Services.
+- **Terminology drift resolved** — "prior thumbprint" / "prior cert" → "old thumbprint" / "old cert" throughout the skill, matching the `<old-thumbprint>` variable name used in `per-app-procedure.md`.
+- **Step 6 table row for Step A** now describes the actual validation step (tenant context still matches Step 0 approval) rather than the misleading "(no failure mode)".
+- **Managed Cert pre-check query** in `managed-certs.md` no longer claims to be "Query 2 from resource-graph-queries.md" (Query 2 is suffix-based; the pre-check is thumbprint-based).
+- **Cross-platform tested** — both `check_pfx.sh` (bash on macOS) and `check_pfx.ps1` (PowerShell 7 on macOS) verified against a chain-bundled PFX (exit 0, full chain walked) and a synthesized chain-less PFX (exit 1, FAIL message).
+
 ### Added
 - **New plugin `azure-appservice-cert-rollout`** at `plugins/azure-appservice-cert-rollout/`. Ships one skill — `azure-appservice-cert-rollout` — codifying a production-safe BYOC TLS certificate rollout workflow for Azure App Services across one or many subscriptions in a tenant. Built from two real-world rollout sessions (May 2026 initial cross-subscription deploy; June 2026 chain-fix follow-up after a leaf-only PFX was discovered to have been uploaded). Designed for the MSP / multi-client case.
 - **Three hard invariants encoded into the skill**: (1) PFX chain validation BEFORE upload via portable openssl script, (2) tenant + subscription scope confirmation gate BEFORE any write, (3) manual one-step-at-a-time execution — separate tool calls per step, no batch loops, stop-on-first-failure.

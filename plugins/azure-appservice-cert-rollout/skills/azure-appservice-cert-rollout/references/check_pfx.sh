@@ -163,12 +163,13 @@ if [[ -n "$HOSTNAME_SUFFIX" ]]; then
   echo "=== HOSTNAME COVERAGE CHECK ==="
   echo "Checking SAN against hostname suffix: $HOSTNAME_SUFFIX"
   ESC_SUFFIX="${HOSTNAME_SUFFIX//./\\.}"
+  # Anchor with a literal leading dot so 'example.com' doesn't match 'notexample.com'.
   if echo "$SAN" | grep -qE "(^|\s)\*\.${ESC_SUFFIX}\b"; then
     echo "  ✓ wildcard *.${HOSTNAME_SUFFIX} present — covers any single-label subdomain."
-  elif echo "$SAN" | grep -qE "${ESC_SUFFIX}\$"; then
-    echo "  ✓ at least one SAN ends in ${HOSTNAME_SUFFIX} (not wildcard — verify per-hostname coverage)."
+  elif echo "$SAN" | grep -qE "\.${ESC_SUFFIX}\$"; then
+    echo "  ✓ at least one SAN ends in .${HOSTNAME_SUFFIX} (not wildcard — verify per-hostname coverage)."
   else
-    echo "  ⚠ no SAN matches suffix ${HOSTNAME_SUFFIX}. This PFX may not cover the target hostnames."
+    echo "  ⚠ no SAN matches suffix .${HOSTNAME_SUFFIX}. This PFX may not cover the target hostnames."
     exit 3
   fi
 fi

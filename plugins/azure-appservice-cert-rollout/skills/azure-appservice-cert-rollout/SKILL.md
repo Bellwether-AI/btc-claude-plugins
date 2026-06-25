@@ -22,7 +22,7 @@ If you find yourself reaching for a `for` loop, a parallel-execution pattern, or
 4. **Plan presentation** — categorize every in-scope App Service (full renewal / cleanup-only / already clean / intentionally untouched). Operator approves before any write.
 5. **Pilot** — one carefully chosen app, full sequence end-to-end, pause for operator review.
 6. **Bulk execution** — same sequence, one app at a time, separate tool calls per step. Halt on first failure.
-7. **Inline cleanup** — delete the prior cert from each webspace AFTER its binding-verification passes; optionally also clean unrelated stale cert resources.
+7. **Inline cleanup** — delete the old cert from each webspace AFTER its binding-verification passes; optionally also clean unrelated stale cert resources.
 8. **Final verification** — re-run discovery queries, confirm zero stale targets remain.
 9. **Work record** — write a redacted markdown summary to the operator's working directory.
 
@@ -47,22 +47,37 @@ Save the approved list of subscription GUIDs — every subsequent Resource Graph
 Ask only those not already obvious from context:
 
 - **PFX file path** (absolute) on the operator's workstation.
-- **PFX password** — ask for it, then immediately set it to the `PFX_PWD` environment variable for the current session: `export PFX_PWD='<password>'`. **Do not pass the password as a positional argument to scripts, do not put it on a command line where `ps` or shell history will capture it, do not write it to disk, and do not echo it back.**
+- **PFX password** — ask for it, then immediately set it to the `PFX_PWD` environment variable for the current session as its own discrete command, so the value is exported into the shell environment (not just prefixed onto a single command line, which would still leave it visible to `ps`):
+  - **macOS / Linux (bash, zsh):** `export PFX_PWD='<password>'`
+  - **Windows (PowerShell, cross-platform pwsh):** `$env:PFX_PWD = '<password>'`
+  - **Windows (cmd.exe):** `set PFX_PWD=<password>` (no quotes — `set` includes everything to end-of-line)
+
+  **Do not pass the password as a positional argument to scripts, do not put it on a command line where `ps` or shell history will capture it, do not write it to disk, and do not echo it back.**
 - **Custom hostname domain suffix** to filter on (e.g. `example.com`, `acme.io`). This scopes discovery.
 - **Friendly name** for the cert resource in App Service (e.g. `acme-wildcard-2026-27`). Useful to derive from the PFX filename. Avoid reusing a name that's already in some target webspaces unless an in-place overwrite is the intent.
 - **Optional: extra stale thumbprints to clean** beyond the cert being replaced — discovery may surface these and the operator decides what to remove.
 
 ## Step 2 — PFX validation (GATE — no upload before this passes)
 
-Run the chain validation script:
+The validation runs as a script invocation. `PFX_PWD` must already be in the environment from Step 1 — do NOT inline-prefix it onto the script invocation (that still shows the value in `ps`). Use the platform's native script:
+
+**macOS / Linux (bash):**
 
 ```bash
-PFX_PWD='<password from env, not from operator paste each time>' \
-  bash /path/to/skill/references/check_pfx.sh '<pfx-path>' '<hostname-suffix>'
+bash /path/to/skill/references/check_pfx.sh '<pfx-path>' '<hostname-suffix>'
 echo "exit code: $?"
 ```
 
-The script reads the password from `PFX_PWD` to keep it off the command line. Check the exit code:
+**Windows / cross-platform (PowerShell 5.1+ or PowerShell 7+):**
+
+```powershell
+pwsh C:\path\to\skill\references\check_pfx.ps1 '<pfx-path>' '<hostname-suffix>'
+"exit code: $LASTEXITCODE"
+```
+
+Both scripts read the password from `PFX_PWD` and exit with the same codes. The PowerShell version uses .NET's native `X509Certificate2Collection` so it doesn't depend on openssl being on PATH; the bash version shells out to openssl (always present on macOS/Linux, and on Windows if you've chosen to use the bash version under WSL or Git Bash).
+
+Check the exit code:
 
 - **0** — PFX is good. Continue.
 - **1** — Chain is missing (leaf-only PFX). **Halt.** Tell the operator they need the certificate authority to re-issue the PFX with the full chain bundled, or to merge the chain themselves with `openssl pkcs12 -export -out new.pfx -inkey key.pem -in leaf.pem -certfile chain.pem`.
@@ -84,7 +99,7 @@ Read `references/resource-graph-queries.md` and run the four discovery queries, 
 
 Present results to the operator as a categorized table. Look for:
 - Apps already on the new thumbprint (no binding change needed, may need cleanup).
-- Apps on a prior thumbprint (needs full upload + bind).
+- Apps on an old thumbprint (needs full upload + bind).
 - Hostnames currently `Disabled` (intentional no-TLS — usually leave alone).
 - Cert resources with the new thumbprint already present in some webspaces (someone may have started this work earlier — surface this).
 - Stale cert resources from previous rollouts.
@@ -95,7 +110,7 @@ Present results to the operator as a categorized table. Look for:
 Lay out the planned actions and get explicit approval. Categorize every in-scope App Service into:
 
 - **A. Full renewal needed** — needs upload + bind + delete-old.
-- **B. Cleanup only** — binding is already on the target thumbprint; just needs the prior cert resource removed.
+- **B. Cleanup only** — binding is already on the target thumbprint; just needs the old cert resource removed.
 - **C. Already clean** — already on target cert, no stale resources in webspace, no action.
 - **D. Intentionally untouched** — disabled hostnames, hostnames not covered by the new cert SAN, etc.
 
@@ -124,15 +139,15 @@ The per-app sequence is documented in detail in `references/per-app-procedure.md
 
 | Step | Command | Validate |
 |---|---|---|
-| A | `az account set --subscription "<sub>"` | (no failure mode) |
-| B | `az webapp config ssl upload ...` (reads `PFX_PWD` env var) | Returned thumbprint matches expected |
+| A | `az account set --subscription "<sub>"` | Returns 0; tenant from `az account show` still matches the Step 0 approved tenant |
+| B | `az webapp config ssl upload ...` (reads `PFX_PWD` env var) | Returned thumbprint matches expected new thumbprint |
 | C | `az webapp config ssl bind ...` | hostNameSslStates entry shows new thumbprint, SniEnabled |
-| D | `sleep 20`, then `openssl s_client` direct-to-App-Service chain probe | Full chain served (leaf + intermediates + root) |
+| D | Wait ~20s, then `openssl s_client` direct-to-App-Service chain probe | Full chain served (leaf + intermediates + root) |
 | E | `az webapp config ssl delete ...` (old thumbprint) | Clean exit (or known "not found" for Managed Certs) |
 
 **Stop-on-first-failure invariant.** If any step on any app fails or returns unexpected output, halt the entire rollout and surface to the operator. Do not continue to step N+1 or app N+1. The operator decides whether to investigate, retry, or roll back.
 
-**Post-bind rollback path for Step D failure.** If the chain probe in Step D shows the wrong chain after a successful bind, the app is now live on the wrong cert. Rollback procedure: re-run Step C with the **prior** thumbprint (it's still in the webspace because Step E hasn't run), confirm the rebind via Resource Graph readback, and halt. Investigate before doing anything else. Do not run Step E for this app — that would delete the only cert you can roll back to.
+**Post-bind rollback path for Step D failure.** If the chain probe in Step D shows the wrong chain after a successful bind, the app is now live on the wrong cert. Rollback procedure: re-run Step C with the **old** thumbprint (it's still in the webspace because Step E hasn't run), confirm the rebind via Resource Graph readback, and halt. Investigate before doing anything else. Do not run Step E for this app — that would delete the only cert you can roll back to.
 
 **Edge propagation delay.** App Service edge takes ~15-30 seconds (empirical, not vendor-documented) between bind and serving the new cert. The 20-second sleep in Step D handles this. If a probe still shows the old cert after 30s, wait another 30s before assuming the bind failed.
 
@@ -140,7 +155,7 @@ The per-app sequence is documented in detail in `references/per-app-procedure.md
 
 ## Step 7 — Inline old-cert cleanup (with webspace-safety pre-check)
 
-Step E is the per-app delete of the prior cert thumbprint from that app's webspace. **Before each delete**, confirm that no other App Service in that webspace still has a binding referencing the prior thumbprint. Query 2 from `resource-graph-queries.md` will tell you. If any sibling app in the same webspace is still bound to the old thumbprint, you must rebind it first (or skip the delete until all siblings have been migrated). Deleting a cert resource that's still in use by some hostname will break that hostname's TLS handshake.
+Step E is the per-app delete of the old cert thumbprint from that app's webspace. **Before each delete**, confirm that no other App Service in that webspace still has a binding referencing the old thumbprint. The webspace-sibling pre-check query in `references/per-app-procedure.md` (Step E section) is what to use. If any sibling app in the same webspace is still bound to the old thumbprint, you must rebind it first (or skip the delete until all siblings have been migrated). Deleting a cert resource that's still in use by some hostname will break that hostname's TLS handshake.
 
 For additional stale cert resources the operator wants cleaned beyond the immediate predecessor — expired certs from previous rollouts, free Managed Certificates, hostname-specific certs no longer in use — run the same `az webapp config ssl delete` pattern, **one webspace at a time**, with the same sibling-binding pre-check.
 
@@ -179,8 +194,9 @@ Use `references/work-record-template.md` as the structure. Standard naming conve
 
 ## Related references
 
-- `references/check_pfx.sh` — full PFX chain-validation script (Step 2). Pass password via `PFX_PWD` env var.
+- `references/check_pfx.sh` — PFX chain-validation script for macOS / Linux / WSL / Git Bash (Step 2). Reads password from `PFX_PWD` env var.
+- `references/check_pfx.ps1` — PFX chain-validation script for Windows PowerShell 5.1+ and PowerShell 7+ (cross-platform pwsh). Same exit codes, no openssl dependency (uses .NET's native cert handling).
 - `references/resource-graph-queries.md` — all KQL queries used in discovery and verification (Steps 3, 8).
-- `references/per-app-procedure.md` — full CLI command reference for the per-app sequence (Step 6), including rollback procedures.
+- `references/per-app-procedure.md` — full CLI command reference for the per-app sequence (Step 6), including rollback procedures and webspace-sibling pre-check.
 - `references/managed-certs.md` — detecting and handling App Service Managed Certificates.
 - `references/work-record-template.md` — structure for the Step 9 markdown work record.

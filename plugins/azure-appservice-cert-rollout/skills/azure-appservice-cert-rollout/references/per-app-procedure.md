@@ -4,13 +4,21 @@ The core renewal sequence. Each section is **one tool call** when executing — 
 
 ## Pre-flight: PFX password in env, NOT in argv
 
-The PFX password must already be in the `PFX_PWD` environment variable from Step 1 of the workflow. Every command below uses `"$PFX_PWD"` (in double quotes for shell expansion) so the literal password never appears on the command line. Reasons:
+The PFX password must already be in the `PFX_PWD` environment variable from Step 1 of the workflow. Every command below references it via the shell's env-var expansion (`"$PFX_PWD"` in bash, `$env:PFX_PWD` in PowerShell) so the literal password never appears on the command line. Reasons:
 
-- `ps` / `ps aux` shows full command lines to other users on the workstation.
-- Shell history (zsh's `~/.zsh_history`, bash's `~/.bash_history`) captures executed commands.
+- `ps` / `ps aux` (macOS/Linux) and `Get-Process -IncludeUserName -Verbose` (Windows) show full command lines to other users on the workstation.
+- Shell history (zsh's `~/.zsh_history`, bash's `~/.bash_history`, PowerShell's `(Get-PSReadLineOption).HistorySavePath`) captures executed commands.
 - Some terminal multiplexers persist scrollback to disk.
 
-If you didn't set `PFX_PWD` in Step 1, do that now: `export PFX_PWD='<password>'`. Confirm: `echo "${PFX_PWD:+set}"` should print `set` (without echoing the password itself).
+If you didn't set `PFX_PWD` in Step 1, do that now in a separate command (NOT inline-prefixed to the cert command, which would still leak via `ps`):
+
+| Shell | Set | Confirm (without echoing) |
+|---|---|---|
+| bash / zsh | `export PFX_PWD='<password>'` | `echo "${PFX_PWD:+set}"` → `set` |
+| PowerShell | `$env:PFX_PWD = '<password>'` | `if ($env:PFX_PWD) { 'set' } else { 'unset' }` |
+| cmd.exe | `set PFX_PWD=<password>` (no quotes) | `if defined PFX_PWD echo set` |
+
+In the command examples below, `"$PFX_PWD"` is bash syntax. In PowerShell, the equivalent is `"$env:PFX_PWD"` or `$env:PFX_PWD` depending on quoting context. `az` CLI does not care which shell expanded the variable — it just sees the resolved password string at argv time, exactly as if you had typed it.
 
 ## Variables to substitute
 
@@ -23,7 +31,7 @@ Per app:
 - `<cert-name>` — friendly name to assign in App Service (e.g. `acme-wildcard-2026-27`)
 - `<new-thumbprint>` — expected SHA-1 thumbprint (validated in Step 2 of the workflow)
 - `<hostname>` — the custom hostname being bound (e.g. `app.example.com`)
-- `<old-thumbprint>` — the prior cert this rollout is replacing
+- `<old-thumbprint>` — the cert being replaced (the "old" / soon-to-be-removed thumbprint)
 
 The `PFX_PWD` env var holds the password — referenced as `"$PFX_PWD"` not interpolated literally.
 
@@ -124,7 +132,7 @@ Skip Step D entirely. The HTTP listener isn't running so the TLS probe will fail
 
 A public hostname probe sees the front-door's cert, not the App Service's. The `<app>.azurewebsites.net:443` direct probe with the custom hostname as SNI is the only reliable way to verify the App Service is serving the right cert. This is what the command above does.
 
-## Step E — Delete the prior cert resource from this webspace
+## Step E — Delete the old cert resource from this webspace
 
 **Pre-delete safety check.** Before running the delete, confirm no OTHER hostname in this webspace is still bound to `<old-thumbprint>`. Webspaces (sub + RG + region + OS) can host multiple App Services from the same App Service Plan, and they share cert resources. Deleting a cert resource that another app's binding still references will break that app's TLS handshake.
 
