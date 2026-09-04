@@ -22,6 +22,12 @@
       "source": "./plugins/agent-eval-updates",
       "description": "High-autonomy tuning iteration for BTC Azure Function Agents in the btc_agent_evals project. Pulls CosmosDB evaluations since last round, filters pre-fix artifacts, analyzes prompt vs code fixes, implements in per-agent worktrees with local soak testing, and opens per-agent PRs. Four user gates only.",
       "version": "0.1.0"
+    },
+    {
+      "name": "azure-appservice-cert-rollout",
+      "source": "./plugins/azure-appservice-cert-rollout",
+      "description": "End-to-end workflow for rolling out a Bring-Your-Own-Certificate (BYOC) TLS certificate to Azure App Services across one or more subscriptions. Built around three hard invariants — PFX chain validation before upload, explicit tenant + sub scope confirmation before any write, and manual one-step-at-a-time execution (no batch loops). Covers tenant scope gate, PFX chain check (portable openssl script), Resource Graph discovery, plan approval, pilot, bulk execution with stop-on-first-failure + post-bind rollback, inline old-cert cleanup with sibling-binding pre-check, final verification sweep, and a redacted markdown work record.",
+      "version": "0.1.0"
     }
   ]
 }
