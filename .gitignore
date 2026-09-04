@@ -10,3 +10,8 @@ dist/
 .claude/
 .flywheel-prompt-*.txt
 .co-dwerker.state.json
+# Python tooling caches (plugin scripts + tests)
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
