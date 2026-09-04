@@ -1,198 +1,97 @@
 ---
-description: Create a new GitHub Issue and optionally add it to the active project board with priority and status
+name: new-issue
+description: Use when the user wants to create a GitHub issue — "open an issue for this", "file a bug", "add a task for later", or when new work surfaces mid-session — and optionally add it to the active project board with a priority and status. Also invoked inline by /co-dwerker:work and /co-dwerker:pr-review when they discover follow-up work.
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py *)
 ---
+
 # Co-Dwerker: New Issue
 
-Create a GitHub Issue from the current repo. If a co-dwerker work session is active in project mode, the issue is also added to the project board with user-selected priority and status.
+Create a GitHub issue in the current repo. In project mode, also add it to the board with a
+priority and status. Works standalone at any time; the work and pr-review skills call it inline
+when discovered work needs a home.
 
-This command can be invoked standalone at any time, or it is called inline during work sessions when new work items surface.
+Conventions (environment, model policy, asking, `gh` errors):
+`${CLAUDE_PLUGIN_ROOT}/references/conventions.md`.
 
-## Environment
+## 1. Draft the issue
 
-```bash
-TODAY=$(date +%Y-%m-%d)
-STATE_FILE=".co-dwerker.state.json"
-REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
-REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
-```
+Ask for a title and description (a title alone is fine; help flesh it out). Build:
 
-## Model Preference
-
-When dispatching subagents via the `Agent` tool during issue creation, always set `model: "opus"`. Never use `model: "haiku"`. Use `"sonnet"` as minimum fallback.
-
----
-
-## Step 1: Gather Issue Details
-
-Use `AskUserQuestion` to collect the issue information:
-
-> "What's the issue? Give me a title and description (or just a title and I'll help flesh it out)."
-
-From the user's response, construct:
-- **Title** — concise, imperative form (e.g., "Add pagination to user list endpoint")
-- **Body** — expand the user's description into a structured issue body:
+- **Title** — concise, imperative ("Add pagination to the user list endpoint").
+- **Body**:
   ```markdown
   ## Description
   <what needs to happen and why>
 
   ## Acceptance Criteria
-  - [ ] <criterion 1>
-  - [ ] <criterion 2>
+  - [ ] <criterion>
   ```
-- **Labels** — suggest relevant labels based on the description (bug, enhancement, documentation, etc.). Ask the user to confirm or adjust.
-- **Assignee** — default to `@me` unless the user specifies otherwise.
+- **Labels** — suggest from the description (bug, enhancement, documentation, …).
+- **Assignee** — `@me` unless told otherwise.
 
-Present the draft issue to the user for confirmation before creating it:
+Show the draft and ask: **Create it (Recommended)**, **Edit first** (take the changes and redraft).
 
-> "Here's the issue I'll create:
->
-> **Title:** <title>
-> **Labels:** <labels>
-> **Assignee:** <assignee>
->
-> **Body:**
-> <body preview>
->
-> Look good?"
+## 2. Priority (both modes)
 
----
+Ask with options **P2-Medium (Recommended)**, **P1-High**, **P0-Critical**, **P3-Low**. Priority
+labels are created on first use if the repo lacks them
+(`${CLAUDE_PLUGIN_ROOT}/references/setup-project-board.md`).
 
-## Step 2: Ask for Priority (both modes)
-
-Priority is always assigned, regardless of work mode. Use `AskUserQuestion`:
-
-> "What priority for this issue?"
->
-> **P0-Critical** / **P1-High** / **P2-Medium** (default) / **P3-Low**
-
-Store the selected priority label (e.g., `P2-Medium`).
-
----
-
-## Step 3: Create the Issue
+## 3. Create
 
 ```bash
 gh issue create --repo "$REPO_OWNER_NAME" \
-  --title "<title>" \
-  --body "<body>" \
-  --label "<label1>" --label "<priority-label>" \
+  --title "<title>" --body "<body>" \
+  --label "<label>" --label "<priority-label>" \
   --assignee "@me"
 ```
 
-Use separate `--label` flags for each label (not comma-separated). Include the priority label from Step 2 alongside any category labels from Step 1.
+One `--label` flag per label. Capture `NEW_ISSUE_NUMBER` and the URL from the output.
 
-Capture the new issue number from the command output:
+## 4. Project board (project mode only)
 
-```bash
-NEW_ISSUE_NUMBER=<number from gh output>
-```
+Read `work_mode` from `.co-dwerker.state.json` (`progress.context` or top level). If it is not
+`project`, skip to step 5.
 
----
-
-## Step 4: Project Board Integration (project mode only)
-
-Read the state file to check the current work mode:
+Ask for a board status: **Backlog (Recommended)**, **Ready**, **In Progress**. Then:
 
 ```bash
-# Read .co-dwerker.state.json
-```
-
-**If `work_mode` is not `"project"`, skip to Step 5.**
-
-If `work_mode == "project"`, the issue should also be added to the active project board.
-
-### 4a. Load Project Context
-
-Read from the state file:
-- `github_project_number` --> `PROJECT_NUMBER`
-- Fetch `PROJECT_ID` if not cached:
-
-```bash
+PROJECT_NUMBER=$(jq -r '.github_project_number' "$STATE_FILE")
 PROJECT_ID=$(gh project view $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --jq '.id')
-```
-
-### 4b. Ask for Board Status
-
-Use `AskUserQuestion`:
-
-> "Adding to Project #$PROJECT_NUMBER. What status?"
->
-> **Backlog** (default) / **Ready** / **In Progress**
-
-Priority was already selected in Step 2 -- reuse it for the board field.
-
-### 4c. Add Issue to Project Board
-
-```bash
-# Add the issue to the project
 gh project item-add $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" \
   --url "https://github.com/$REPO_OWNER_NAME/issues/$NEW_ISSUE_NUMBER"
+gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json   # field + option ids
 ```
 
-### 4d. Set Priority and Status Fields
-
-Fetch the project field IDs and option IDs (load from state cache if available, otherwise query):
-
-```bash
-# Get field list
-gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json
-```
-
-Find the item ID for the newly added issue:
+The new item can take a moment to appear in the list, so poll briefly rather than failing on the
+first empty result:
 
 ```bash
-ITEM_ID=$(gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json \
-  | jq -r '.items[] | select(.content.number? == '$NEW_ISSUE_NUMBER' and .content.repository? | test("'$REPO_OWNER_NAME'")) | .id')
-```
-
-If `ITEM_ID` is empty, the issue may not have been added yet. Wait briefly and retry:
-
-```bash
-# Retry once if ITEM_ID is empty
-sleep 2
-ITEM_ID=$(gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json \
-  | jq -r '.items[] | select(.content.number? == '$NEW_ISSUE_NUMBER') | .id')
-```
-
-Set the field values:
-
-```bash
-# Set priority
+for attempt in 1 2 3 4; do
+  ITEM_ID=$(gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json \
+    | jq -r '.items[] | select(.content.number? == '$NEW_ISSUE_NUMBER') | .id')
+  [ -n "$ITEM_ID" ] && break
+  sleep 2
+done
 gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID \
   --field-id $PRIORITY_FIELD_ID --single-select-option-id $SELECTED_PRIORITY_OPTION_ID
-
-# Set status
 gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID \
   --field-id $STATUS_FIELD_ID --single-select-option-id $SELECTED_STATUS_OPTION_ID
 ```
 
----
+## 5. Session integration
 
-## Step 5: Session Integration
+If a work session is active (`progress.status` is `in_progress` in the state file), record the
+issue and ask whether it joins today's queue:
 
-If called during an active work session (state file has `last_session.date == $TODAY`):
+```bash
+CK="${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py"
+$CK set --append issues_created=$NEW_ISSUE_NUMBER
+$CK set --set planned_issues='[<existing..., NEW_ISSUE_NUMBER>]'   # only if the user says yes
+```
 
-Use `AskUserQuestion`:
+## 6. Confirm
 
-> "Add Issue #$NEW_ISSUE_NUMBER to today's work queue?"
-
-If yes, append `NEW_ISSUE_NUMBER` to the in-memory `PLANNED_ISSUES` list. The exit skill will persist this to the state file.
-
-If no, the issue stays in backlog / the status selected in Step 4.
-
----
-
-## Step 6: Confirmation
-
-Present the result:
-
-> "Created Issue #$NEW_ISSUE_NUMBER: <title>
-> $ISSUE_URL"
-
-If added to a project board:
-
-> "Added to Project #$PROJECT_NUMBER as **$PRIORITY** / **$STATUS**"
-
-If added to today's work queue:
-
-> "Added to today's work queue."
+> Created issue #$NEW_ISSUE_NUMBER: <title> — $ISSUE_URL
+> (project mode) Added to project #$PROJECT_NUMBER as **$PRIORITY** / **$STATUS**
+> (if queued) Added to today's work queue.

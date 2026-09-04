@@ -1,251 +1,117 @@
 ---
-description: Wind down and save the current work session -- persist state, update project board, save memories, write summary. Use when done for the day, wrapping up, stopping work, or ending a session.
+name: exit
+description: Use when the user is done for the day, wrapping up, stopping work, or ending a co-dwerker session — persists state, updates the project board, saves memories, and writes a summary so the next session can resume. Also use for "let's stop here", "save where we are", or "wind down".
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py *)
 ---
+
 # Co-Dwerker: Exit
 
-Gracefully wind down a co-dwerker work session. This skill persists state across **every** available memory and documentation system so the next session can reconstruct full context regardless of how it starts.
+Wind down a work session so the next one, whenever and however it starts, can reconstruct the
+full picture. Several systems each hold part of that picture, so this skill writes to all of
+them:
 
-**Persistence layers written to:**
-1. Local state file (`.co-dwerker.state.json`)
-2. GitHub Project board
-3. Superpowers auto-memory (`~/.claude/projects/.../memory/`)
-4. Claude built-in memories (project, feedback, reference types)
-5. Project status files (CLAUDE.md, project_state.md, `.co-dwerker.json`)
-6. Episodic memory (full session history)
+1. The local state file (`.co-dwerker.state.json`) — machine-readable resume point
+2. The GitHub Projects board (project mode) — shared, human-visible status
+3. Auto-memory (`~/.claude/projects/<project>/memory/`) — durable facts and learnings
+4. Project status files (`.co-dwerker.json`, `CLAUDE.md`, `project_state.md`)
+5. Episodic memory — the searchable conversation record
 
-## Environment
+Shared conventions, environment variables, and file schemas:
+`${CLAUDE_PLUGIN_ROOT}/references/conventions.md`. `CK="${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py"`.
 
-```bash
-TODAY=$(date +%Y-%m-%d)
-STATE_FILE=".co-dwerker.state.json"
-CONFIG_FILE=".co-dwerker.json"
-GLOBAL_STATE_FILE="$HOME/.claude/co-dwerker-last-repo.json"
-GLOBAL_STATE_FILE_LEGACY="$HOME/.co-dwerker-last-repo.json"
-REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
-REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
-# Assumes HTTPS or git@github.com SSH remote format
-PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-# Match the auto-memory directory convention used by Claude Code.
-# The exact path varies by platform — check for existing memory files first:
-#   ls ~/.claude/projects/*/memory/MEMORY.md
-# Use the matching directory. If none exists, derive from project root.
-MEMORY_DIR="$HOME/.claude/projects/$(echo $PROJECT_ROOT | sed 's|[/:\\]|-|g')/memory"
-```
+## 1. Gather the session facts
 
-## Model Preference
+Start from `$CK show`, which prints the live `progress` block (active issue, phase, step, and the
+context keys: branch, worktree, PRs, planned issues, local-app skip reasons), then fill in from
+the conversation:
 
-When dispatching subagents via the `Agent` tool during exit, always set `model: "opus"`. Never use `model: "haiku"`. Use `"sonnet"` as minimum fallback.
+- Issues completed, created (via `/co-dwerker:new-issue`), and still in progress
+- PRs created and merged, with URLs
+- Branches with uncommitted or unpushed work; open worktrees
+- Decisions that affect future work; blockers and follow-ups
 
-## Process
+## 2. Save the local state file
 
-### 1. Gather Session Summary
+Update `$STATE_FILE` (schema in conventions §9). Leave the `progress` block exactly as
+`checkpoint.py` left it; that is what Resume Check reads. Write `last_session` from the facts
+above, plus the top-level `work_mode`, `repo_owner_name`, `repo_local_path`
+(`git rev-parse --show-toplevel`), `github_project_number`, `github_project_title`, and
+`planned_issues`. Merge into the existing JSON rather than rewriting it from scratch.
 
-Before persisting anything, collect the facts about this session:
+If `.gitignore` does not already exclude `.co-dwerker.state.json`, add it.
 
-- **Issues completed:** Which issues moved to "Done" this session
-- **Issues created:** New issues created via `/co-dwerker:new-issue` this session
-- **Issues in progress:** Current active issue, what phase it's in
-- **PRs created:** PR numbers and URLs from this session
-- **PRs merged:** Which PRs were merged this session
-- **Branches active:** Feature branches with uncommitted or unpushed work
-- **Worktrees open:** Any git worktrees created this session
-- **Decisions made:** Non-obvious choices that affect future work
-- **Blockers found:** Anything that blocked progress or needs follow-up
-
-### 2. Save Local State (.co-dwerker.state.json)
-
-Write the state file to the project root:
-
-```json
-{
-  "work_mode": "repo or project",
-  "repo_owner_name": "owner/repo",
-  "repo_local_path": "/absolute/path/to/repo",
-  "github_project_number": null or number,
-  "github_project_title": null or "title string",
-  "planned_issues": [<remaining issue numbers>],
-  "last_session": {
-    "date": "$TODAY",
-    "completed_issues": [<issue numbers completed today>],
-    "current_issue": <active issue number or null>,
-    "current_phase": "<phase name or null>",
-    "branch": "<active branch name or null>",
-    "worktree": "<worktree path or null>",
-    "prs_created": [<PR numbers>],
-    "prs_merged": [<PR numbers>],
-    "issues_created": [<issue numbers created this session>],
-    "local_app_pids": [<PIDs spawned during Step 1b / Step 5a>],
-    "local_app_skip_reason": "<one-line reason or null>"
-  }
-}
-```
-
-Notes:
-- `work_mode` persists across sessions so the user doesn't have to re-select each time
-- `repo_owner_name` is stored for display in the resume prompt
-- `repo_local_path` is the absolute path to the repo on disk (from `git rev-parse --show-toplevel`). This enables `/co-dwerker:work` to navigate to the repo when launched from a different directory.
-- `github_project_number` and `github_project_title` are null when `work_mode == "repo"`
-- `issues_created` tracks issues created via `/co-dwerker:new-issue` during this session
-- `local_app_pids` is written by `/co-dwerker:work` Phase 3 Step 1b and Step 5a so the next run's port-conflict auto-remediation can recognize stale processes the agent itself spawned. Persist as-is at exit; the next session reads it and clears entries whose processes have already exited.
-- `local_app_skip_reason` is the one-line reason captured at the Step 5a blocker gate when the user chose "Skip with a documented reason". `null` (or absent) when no skip occurred. See `references/local-app-verification.md`.
-
-This file should be gitignored. If `.gitignore` doesn't already exclude it, add the entry:
-
-```bash
-echo ".co-dwerker.state.json" >> .gitignore
-```
-
-Also write a **global last-repo file** at `$GLOBAL_STATE_FILE` (`~/.claude/co-dwerker-last-repo.json`) so that `/co-dwerker:work` can find the repo when launched from a non-project directory:
+Also write the global last-repo file so `/co-dwerker:work` can find this repo from anywhere:
 
 ```bash
 mkdir -p "$HOME/.claude"
+printf '{\n  "repo_owner_name": "%s",\n  "repo_local_path": "%s"\n}\n' "$REPO_OWNER_NAME" "$PROJECT_ROOT" > "$GLOBAL_STATE_FILE"
+rm -f "$GLOBAL_STATE_FILE_LEGACY"     # pre-v0.3.1 location
 ```
 
-```json
-{
-  "repo_owner_name": "owner/repo",
-  "repo_local_path": "/absolute/path/to/repo"
-}
-```
-
-This file is intentionally minimal -- it only stores enough to navigate back to the project. The full session state remains in the project-local `$STATE_FILE`.
-
-**Legacy cleanup:** If a file exists at `$GLOBAL_STATE_FILE_LEGACY` (`~/.co-dwerker-last-repo.json`, the pre-v0.3.1 location), delete it after writing the new file:
-```bash
-rm -f "$HOME/.co-dwerker-last-repo.json"
-```
-
-### 3. Update GitHub Project Board (project mode only)
-
-**Skip this step if `work_mode == "repo"`.**
-
-If `work_mode == "project"`, verify board items reflect current reality:
+## 3. Update the project board (project mode only)
 
 ```bash
 gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --limit 100
 ```
 
-For each issue worked on this session:
-- Completed issues --> confirm status is "Done"
-- Issues mid-work --> confirm status is "In Progress" (not accidentally reset)
-- Issues with PRs ready --> confirm status is "In Review"
+For each issue touched this session make sure the board agrees with reality: completed → Done,
+mid-work → In Progress, PR awaiting review → In Review. Only fix discrepancies.
 
-Do not change statuses that are already correct. Only fix discrepancies.
+## 4. Save memories
 
-### 4. Update Superpowers Auto-Memory
+The auto-memory directory is the one whose `MEMORY.md` your system prompt loads for this project.
+If you cannot see it there, `ls ~/.claude/projects/*/memory/MEMORY.md` and pick the entry whose
+path matches this repo (`autoMemoryDirectory` in settings can relocate it, so do not derive the
+path by hand).
 
-Check if a project memory file exists for this repo:
-
-```bash
-ls "$MEMORY_DIR"/*.md 2>/dev/null
-```
-
-**If memory files exist for this project**, update the relevant ones with current state:
-- Active branches, current issue, what phase we're in
-- Any patterns or conventions learned during the session
-- Update MEMORY.md index if descriptions changed
-
-**If no memory files exist yet**, create a new project memory file:
-
-Write to `$MEMORY_DIR/<project-name>.md`:
+**Project status memory.** Create or update `<project-name>.md`:
 
 ```markdown
 ---
 name: <Project Name> Status
-description: Current development state for <project> — active issues, branches, and next steps
+description: Current development state for <project> — active issues, branches, next steps
 type: project
 ---
 
 ## Current State (as of $TODAY)
-
-- **Active issue:** #<number> — <title> (Phase: <phase>)
-- **Branch:** <branch-name>
-- **PRs open:** #<number> (<status>)
-- **Next up:** #<number>, #<number>
+- **Active issue:** #<n> — <title> (Phase <p>, step <s>)
+- **Branch / worktree:** <branch> / <path or none>
+- **PRs open:** #<n> (<status>)
+- **Next up:** #<a>, #<b>
 
 ## Session History
-- $TODAY: <1-2 sentence summary of what was accomplished>
+- $TODAY: <one or two sentences on what was accomplished>
 
 **Why:** Enables session continuity across Claude Code conversations.
 **How to apply:** Read this at session start to resume context.
 ```
 
-Update the `MEMORY.md` index file if a new memory file was created.
+**Learnings.** Save only what a future session cannot derive from code, git history, or docs:
+workflow adjustments the user asked for (type `feedback`, with the reason), external resources
+discovered (type `reference`), non-obvious dependencies between issues or deadlines (type
+`project`). Add a one-line pointer in `MEMORY.md` for every new file.
 
-### 5. Save Session Learnings to Auto-Memory
+## 5. Update project status files
 
-Save non-obvious learnings as markdown files in the auto-memory directory (`$MEMORY_DIR`). These files persist across all future Claude Code sessions for this project.
+**`.co-dwerker.json`** — create on first session, otherwise merge. Other steps own
+`local_app_command`, `local_app_skip`, and `dismissed_warnings`; read the file first and preserve
+them. If no docs repo is known yet, ask once: "Does this project have a companion documentation
+repo? If so, what is the org/repo and the path within it for this project's docs?" Write `null`
+for both fields if not.
 
-Use the `Write` tool to create files in `$MEMORY_DIR/` with YAML frontmatter containing `name`, `description`, and `type` fields. Update `$MEMORY_DIR/MEMORY.md` if adding new files.
+**`CLAUDE.md`** — if project conventions changed (new test or lint commands, run commands), update
+the relevant section.
 
-**Project memories** (type: project, save if applicable):
-- Current work state: active issue, branch, phase
-- Important deadlines or blockers discovered
-- Dependencies between issues that aren't obvious from the board
+**`project_state.md`** — if the project keeps one, refresh status, open PRs, active branches.
 
-**Feedback memories** (type: feedback, save if applicable):
-- Workflow adjustments the user requested during this session
-- Approaches that worked well or poorly
-- Tool/skill usage patterns to repeat or avoid
+## 6. Leave a searchable session record
 
-**Reference memories** (type: reference, save if applicable):
-- External resources discovered (URLs, dashboards, docs)
-- API endpoints or service locations learned
+The episodic-memory plugin indexes the conversation itself. Put a structured summary in plain
+text in the conversation (not in a file) so future searches find it: project and board, date,
+issues worked with outcomes, PRs with URLs and status, key decisions, blockers, what to start
+with next session, and anything surprising that was learned.
 
-Only save memories that will be useful in future sessions. Don't save things derivable from code, git history, or existing documentation.
-
-Also state key learnings explicitly in the conversation text so they are captured by episodic memory (Step 7).
-
-### 6. Update Project Status Files
-
-**`.co-dwerker.json`** — Create if it doesn't exist (first session), update if changed. Preserve any existing keys written by `/co-dwerker:work` Phase 3 Step 5a (`local_app_command`, `local_app_skip`, `dismissed_warnings`) — read the current file first and merge rather than overwrite.
-
-```json
-{
-  "docs_repo": "<org/repo or null>",
-  "docs_path": "<path within docs repo or null>",
-  "local_app_command": "<custom run command string, or absent>",
-  "local_app_skip": false,
-  "dismissed_warnings": [
-    "<normalized warning line>"
-  ]
-}
-```
-
-Field notes:
-- `local_app_command` — custom local-run command provided by the user at the Step 5a no-app-detected gate; used by future Step 1b and Step 5a runs in place of framework detection.
-- `local_app_skip` — `true` when the repo is marked as having no runnable application; Step 1b and Step 5a skip cleanly in future sessions.
-- `dismissed_warnings` — array of normalized warning strings the user permanently dismissed at the Step 5a per-warning gate; future baseline/verification diffs treat these as pre-existing.
-
-If this is the first session and no docs repo is known, ask the user:
-
-> "Does this project have a companion documentation repo? If so, what's the org/repo and the path within it for this project's docs?"
-
-If the user says no or skips, write `null` for both fields.
-
-**`CLAUDE.md`** — If project conventions changed during the session (new test commands, lint config, etc.), update the relevant sections.
-
-**`project_state.md`** (if the project uses one) — Update with current status, open PRs, active branches.
-
-### 7. Save Full Session to Episodic Memory
-
-The episodic-memory plugin automatically captures conversation history. To ensure this session is searchable and useful in future sessions, explicitly state a structured session summary in the conversation before ending. This makes the session discoverable via `episodic-memory:search-conversations`.
-
-Format the summary as a clear text block in conversation (not a file write) so the episodic memory system indexes it:
-
-The session record should include:
-- **Project:** repository name and project board title
-- **Date:** today's date
-- **Issues worked:** numbers, titles, and outcomes (completed, in-progress, blocked)
-- **PRs:** numbers, URLs, and status (created, merged, pending review)
-- **Key decisions:** design choices, approach selections, trade-offs made
-- **Blockers:** anything that prevented progress, with context
-- **What's next:** the recommended starting point for the next session
-- **Patterns/learnings:** anything surprising or non-obvious discovered
-
-### 8. Git Hygiene Check
-
-Review the state of the local repository:
+## 7. Git hygiene
 
 ```bash
 git status --short
@@ -254,40 +120,19 @@ git worktree list
 git stash list
 ```
 
-**If there's uncommitted work:**
-- If changes are meaningful and safe to commit, suggest a WIP commit:
-  > "There are uncommitted changes on branch `$BRANCH`. Want me to create a WIP commit?"
-- If changes are scratch/exploratory, just note them
+- Uncommitted meaningful work → offer a WIP commit (ask; do not just do it). Scratch changes →
+  note them.
+- Branches with no open PR → list them; do not delete anything.
+- Worktrees → list them, marking which came from this session.
 
-**If there are stale branches:**
-- List branches that aren't associated with open PRs
-- Don't delete anything — just note them for the user
+## 8. Exit summary
 
-**If there are open worktrees:**
-- List them with their branch associations
-- Note which ones are from this session vs. prior sessions
+Concise, but complete enough that tomorrow's reader knows exactly where things stand:
 
-### 9. Present Exit Summary
-
-Format a clear summary for the user:
-
-> **Session Summary -- $TODAY** ($WORK_MODE mode on $REPO_OWNER_NAME)
+> **Session Summary — $TODAY** ($WORK_MODE mode on $REPO_OWNER_NAME)
 >
-> **Completed:**
-> - Issue #$N: $TITLE (PR #$PR merged)
->
-> **Created:**
-> - Issue #$N: $TITLE (priority / status)
->
-> **In Progress:**
-> - Issue #$N: $TITLE -- Phase $PHASE (branch `$BRANCH`)
->   - Next step: <what to do when resuming>
->
-> **Tomorrow's Starting Point:**
-> - Resume Issue #$N from Phase $PHASE
-> - Then tackle: #$A, #$B
->
-> **Open Items:**
-> - <any blockers, pending reviews, or follow-ups>
-
-This summary should be concise but complete enough that someone reading it tomorrow can immediately understand where things stand.
+> **Completed:** Issue #n: title (PR #p merged)
+> **Created:** Issue #n: title (priority / status)
+> **In progress:** Issue #n: title — Phase p, step s (branch `b`); next step: …
+> **Tomorrow's starting point:** resume #n at Phase p step s, then #a, #b
+> **Open items:** blockers, pending reviews, follow-ups

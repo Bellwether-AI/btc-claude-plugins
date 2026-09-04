@@ -8,14 +8,14 @@
     {
       "name": "flywheel",
       "source": "./plugins/flywheel",
-      "description": "Flywheel work item management — orchestrate, plan, and execute tasks",
+      "description": "Flywheel work item management \u2014 orchestrate, plan, and execute tasks",
       "version": "1.4.0"
     },
     {
       "name": "co-dwerker",
       "source": "./plugins/co-dwerker",
-      "description": "Structured daily development workflow for any GitHub repo. Supports repo mode (GitHub Issues) and project mode (GitHub Projects board). Standup, brainstorm, execute, standalone documentation, close, and session continuity. Optimized for Opus.",
-      "version": "0.3.5"
+      "description": "Structured daily development workflow for any GitHub repo. Repo mode (GitHub Issues) or project mode (GitHub Projects board). Standup, brainstorm, execute with baselines and local-app verification, review, docs, close, and session continuity via checkpoints. Built for the most capable Claude models.",
+      "version": "1.0.0"
     },
     {
       "name": "agent-eval-updates",
@@ -26,7 +26,7 @@
     {
       "name": "azure-appservice-cert-rollout",
       "source": "./plugins/azure-appservice-cert-rollout",
-      "description": "End-to-end workflow for rolling out a Bring-Your-Own-Certificate (BYOC) TLS certificate to Azure App Services across one or more subscriptions. Built around three hard invariants — PFX chain validation before upload, explicit tenant + sub scope confirmation before any write, and manual one-step-at-a-time execution (no batch loops). Covers tenant scope gate, PFX chain check (portable openssl script), Resource Graph discovery, plan approval, pilot, bulk execution with stop-on-first-failure + post-bind rollback, inline old-cert cleanup with sibling-binding pre-check, final verification sweep, and a redacted markdown work record.",
+      "description": "End-to-end workflow for rolling out a Bring-Your-Own-Certificate (BYOC) TLS certificate to Azure App Services across one or more subscriptions. Built around three hard invariants \u2014 PFX chain validation before upload, explicit tenant + sub scope confirmation before any write, and manual one-step-at-a-time execution (no batch loops). Covers tenant scope gate, PFX chain check (portable openssl script), Resource Graph discovery, plan approval, pilot, bulk execution with stop-on-first-failure + post-bind rollback, inline old-cert cleanup with sibling-binding pre-check, final verification sweep, and a redacted markdown work record.",
       "version": "0.1.0"
     }
   ]

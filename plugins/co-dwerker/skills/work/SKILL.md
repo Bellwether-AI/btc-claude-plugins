@@ -1,786 +1,345 @@
 ---
-description: Start or resume a structured work session -- daily standup, issue triage, brainstorm, implement, review, merge, docs, and session continuity. Captures pre-existing test and local-app baselines before coding (may pause if the local app fails to boot on the unmodified branch) and enforces post-implementation local-app verification with auto-remediation and user gates before opening a PR. Use when starting work, resuming work, doing standup, picking issues, or running a full issue-to-merge development cycle.
+name: work
+description: Use when the user wants to start or resume a development session on a GitHub repo — a daily standup, triaging or picking issues, or taking an issue from design through implementation, review, and merge. Also use for "let's get to work", "what should I work on today", "pick up where we left off", or "resume the session". Requires the superpowers and pr-review-toolkit plugins.
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/localapp_capture.py *), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/localapp_diff.py *)
 ---
+
 # Co-Dwerker: Work
 
-Run a structured development session. This skill orchestrates a full issue-to-merge workflow by composing existing superpowers and pr-review-toolkit skills. Supports two work modes:
+Run a structured development session that takes GitHub issues from standup to merged PR by
+composing the superpowers and pr-review-toolkit skills, and leaves enough state behind that the
+next session picks up exactly where this one stopped.
 
-- **Repo mode** — work directly from GitHub Issues (no project board required)
-- **Project mode** — work from a GitHub Projects board with status/priority tracking
+Two work modes, remembered per repo:
 
-The mode is remembered per project folder so you only choose once.
+- **Repo mode** — GitHub Issues with P0–P3 priority labels; no board needed.
+- **Project mode** — a GitHub Projects board with Status and Priority fields.
 
-**Workflow:** Resume Check --> Mode Select --> Project Select (project mode only) --> Standup --> Brainstorm --> Execute --> Docs --> Close --> Next
+**Workflow:** Repo Detection → Resume Check → 0a Mode → 0b Project (project mode only) →
+1 Standup → 2 Brainstorm → 3 Execute → 4 Docs → 5 Close → 6 Next (loops to 2)
 
-**Required skills (must be installed separately):**
-- `superpowers:brainstorming`
-- `superpowers:writing-plans`
-- `superpowers:executing-plans` or `superpowers:subagent-driven-development`
-- `superpowers:verification-before-completion`
-- `superpowers:using-git-worktrees`
-- `pr-review-toolkit:review-pr`
-- `commit-commands:commit`
-- `episodic-memory:search-conversations`
+**Requires:** `superpowers` (brainstorming, writing-plans, executing-plans or
+subagent-driven-development, verification-before-completion, using-git-worktrees),
+`pr-review-toolkit` (review-pr), `commit-commands` (commit), `episodic-memory`
+(search-conversations).
 
-## Environment
+## Ground rules
 
-```bash
-TODAY=$(date +%Y-%m-%d)
-STATE_FILE=".co-dwerker.state.json"
-CONFIG_FILE=".co-dwerker.json"
-GLOBAL_STATE_FILE="$HOME/.claude/co-dwerker-last-repo.json"
-GLOBAL_STATE_FILE_LEGACY="$HOME/.co-dwerker-last-repo.json"
-```
+`${CLAUDE_PLUGIN_ROOT}/references/conventions.md` holds the shared conventions and file schemas.
+The parts you need on every step:
 
-### Repo Detection
+- **Checkpoints.** `CK="${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py"`. Mark each step
+  `in_progress` before you start it and `completed` when it is done; store anything a later step
+  needs with `$CK set`. Run `$CK gate <phase>` before every user-facing GATE and go back if it
+  lists missing steps. A long autonomous phase pushes these instructions out of context; the state
+  file is what stops a step from being quietly skipped, and it is what Resume Check reads after a
+  crash or a compacted context.
+- **Model.** If the session is not on the most capable model available, suggest `/model best`
+  once, at the start. Never pass `model` when dispatching subagents; they inherit. At most two
+  subagents in flight.
+- **Asking.** Gates are `AskUserQuestion` calls with real options, recommended option first.
+- **Waiting.** No bare `sleep`. Scripts that wait get an explicit Bash `timeout`; CI waits use
+  `gh run watch`.
+- **`gh` failures** stop the workflow with the error and a question, never a silent continue.
 
-The current working directory may not be the target repo. This happens when co-dwerker is launched from a workspace root containing multiple repos, a plugin marketplace folder, a home directory, or any other non-project location. Detect and confirm the repo before proceeding.
+## Repo Detection
 
-1. **Check CWD for a git remote:**
-   ```bash
-   DETECTED_REMOTE=$(git remote get-url origin 2>/dev/null)
-   DETECTED_REPO=$(echo "$DETECTED_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
-   ```
-   If `git remote` fails (exit code non-zero), the CWD is not a git repo or has no remote. If it succeeds but the URL does not contain `github.com`, treat `DETECTED_REPO` as empty (CWD is a git repo but not GitHub-hosted -- skip to the GitHub hosting guard in step 6 rather than scanning for sub-repos).
-
-2. **Check state files for previous repo:**
-   Look for `$STATE_FILE` in the CWD first. If not found, check `$GLOBAL_STATE_FILE` (`~/.claude/co-dwerker-last-repo.json`). If that doesn't exist either, check the legacy location `$GLOBAL_STATE_FILE_LEGACY` (`~/.co-dwerker-last-repo.json`). Parse whichever is found for `repo_owner_name` and `repo_local_path`. Store as `SAVED_REPO` and `SAVED_REPO_PATH`.
-
-3. **Scan for sub-repos (when CWD is not a git repo):**
-   If step 1 failed (no git remote in CWD), scan immediate subdirectories for git repos with GitHub remotes:
-   ```bash
-   for dir in */; do
-     if [ -d "$dir/.git" ]; then
-       SUB_REMOTE=$(git -C "$dir" remote get-url origin 2>/dev/null)
-       SUB_REPO=$(echo "$SUB_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
-       if [ -n "$SUB_REPO" ]; then
-         echo "$SUB_REPO|$(cd "$dir" && pwd)"
-       fi
-     fi
-   done
-   ```
-   Store the results as `DISCOVERED_REPOS` (list of `repo_owner_name|absolute_path` pairs). Only scan immediate children -- never recurse. Only include repos with a `github.com` remote.
-
-4. **Determine the repo to use:**
-   - **Case A -- CWD has a valid GitHub remote AND matches `SAVED_REPO` (or no saved repo):** use `DETECTED_REPO` silently. Set `REPO_OWNER_NAME=$DETECTED_REPO`.
-   - **Case B -- CWD has a valid GitHub remote but does NOT match `SAVED_REPO`:** ask the user with `AskUserQuestion`:
-     > "The current directory is in the **$DETECTED_REPO** repo, but your last session was on **$SAVED_REPO**. Which repo do you want to work on?"
-   - **Case C -- CWD is NOT a git repo, sub-repos discovered, AND `SAVED_REPO` matches one of them:** Present the discovered repos with the matching repo highlighted as the default. Use the **discovered** path (the freshly scanned one), not the saved path -- the repo may have moved since the last session. Use `AskUserQuestion`:
-     > "The current directory contains multiple repos. Your last session was on **$SAVED_REPO**."
-     >
-     > 1. **$SAVED_REPO** at `$DISCOVERED_PATH` *(last session)*
-     > 2. **$OTHER_REPO_1** at `$OTHER_PATH_1`
-     > 3. **$OTHER_REPO_2** at `$OTHER_PATH_2`
-     >
-     > "Which repo do you want to work on?"
-     After selection, `cd` to the chosen path and re-derive environment variables. If the `cd` fails (path no longer accessible), tell the user and fall through to Case F.
-     **Single-repo shortcut:** If exactly 1 sub-repo is found and it matches the saved repo, use it directly with a confirmation message (no list needed):
-     > "Found repo **$REPO** at `$PATH` (matches your last session). Using it."
-   - **Case D -- CWD is NOT a git repo, sub-repos discovered, but no `SAVED_REPO` OR saved repo does NOT match any discovered repo:** Present discovered repos as a numbered list. If `SAVED_REPO` exists but doesn't match any discovered repo, include it as an additional option. Use `AskUserQuestion`:
-     > "The current directory is not a git repo, but I found these repos in subdirectories:"
-     >
-     > 1. **$REPO_1** at `$PATH_1`
-     > 2. **$REPO_2** at `$PATH_2`
-     > 3. **$SAVED_REPO** at `$SAVED_REPO_PATH` *(last session, not in this directory)*
-     >
-     > "Which one do you want to work on?"
-     If no `SAVED_REPO` exists, omit the last option.
-     After selection, `cd` to the chosen path and re-derive environment variables. If the `cd` fails, tell the user and fall through to Case F.
-     **Single-repo shortcut:** If exactly 1 sub-repo is found (and no saved repo), use it directly:
-     > "Found repo **$REPO** at `$PATH`. Using it."
-   - **Case E -- CWD is NOT a git repo, NO sub-repos discovered, but `SAVED_REPO_PATH` exists:** tell the user:
-     > "The current directory is not a git repo. Your last session was on **$SAVED_REPO** at `$SAVED_REPO_PATH`. Navigating there now."
-     Then `cd "$SAVED_REPO_PATH"` and re-derive the environment variables. If the saved path no longer exists, fall through to Case F.
-   - **Case F -- CWD is NOT a git repo, NO sub-repos, AND no saved state:** ask the user with `AskUserQuestion`:
-     > "The current directory is not a git repo and no repos were found in subdirectories. Please provide the path to the repo you want to work on, or navigate there first."
-
-5. **Set final variables:**
-   ```bash
-   REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
-   REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
-   ```
-
-6. **GitHub hosting guard:** If `REPO_REMOTE` does not contain `github.com`, stop and tell the user: "co-dwerker requires a GitHub-hosted repository. The origin remote does not appear to be on github.com."
-
-   If `REPO_OWNER_NAME` is still empty after all steps, stop and tell the user: "Could not determine a GitHub repository. Please `cd` to a git repo with a GitHub remote, or provide the path."
-
-**Error handling:** If any `gh` CLI command fails during the session, report the error to the user and ask how to proceed rather than silently continuing. Common causes: missing auth (`gh auth login`), insufficient project board permissions, or rate limiting.
-
-## Model Preference
-
-co-dwerker performs best with the most capable model available.
-
-1. **Check and recommend:** At the start of every session, tell the user:
-   > "co-dwerker works best with the Opus model. If you're not already on it, run `/model opus` to switch."
-2. **Subagent dispatches:** When using the `Agent` tool during this workflow, always set `model: "opus"`.
-3. **Never use Haiku:** Per project policy, never dispatch subagents with `model: "haiku"`. Use `"opus"` as default, `"sonnet"` as minimum fallback.
-
----
-
-## Step Tracking
-
-At the start of each phase, create a task (via `TaskCreate`) for every numbered step and the GATE in that phase. Mark each task `in_progress` before starting it and `completed` when done.
-
-**GATE enforcement:** Before presenting any GATE question to the user, check the task list. If any step in the current phase is not `completed`, go back and complete it before proceeding. Do NOT present the GATE until every step is done.
-
-This prevents step-skipping when implementation work consumes large amounts of context between reading the phase instructions and reaching the GATE.
-
-**Step 5a (Local App Verification) is explicitly phase-gating.** It is not optional and cannot be silently skipped. The only valid completions are: a clean boot+diff, an `AskUserQuestion`-confirmed skip with a recorded reason, or a `.co-dwerker.json`-cached "no runnable app" decision. Any other state means the task stays `in_progress` and Step 6 (Changelog) must not start. See `references/local-app-verification.md` for the full rule set.
-
----
+The working directory may not be the target repo. Follow
+`${CLAUDE_PLUGIN_ROOT}/references/repo-detection.md`, then derive the environment variables
+(conventions §1). Everything below assumes `REPO_OWNER_NAME` is set and the CWD is the repo root.
 
 ## Resume Check
 
-Before starting fresh, check for prior session state.
+1. **State file.** If `$STATE_FILE` exists, `$CK show` prints the live `progress` block and the
+   steps still missing for its phase. `last_session` is the previous exit summary; when both
+   exist, `progress` is the truth.
+2. **Episodic memory.** Invoke `episodic-memory:search-conversations` for recent sessions on
+   this repo: what was accomplished, blockers, decisions, context on the current issue.
+3. **Git.** `git branch --list | head -20`, `git status --short`, `git worktree list`. Look for
+   uncommitted work on a feature branch, worktrees from earlier sessions, branches named after
+   issues in the state file.
+4. **Offer.** If there is mid-issue state, ask: "Last session ($DATE, $WORK_MODE mode on
+   $REPO_OWNER_NAME) was on issue #N at Phase P, step S, branch `B`." Options:
+   **Resume at Phase P step S (Recommended)** — re-enter the recorded worktree if there is one and
+   continue from that step; **Fresh start** — go to Phase 0a. If `progress.status` is
+   `in_progress` but the branch and worktree no longer exist, say so and recommend a fresh start.
 
-### 1. Read Local State
+No prior state → Phase 0a.
 
-Use `Read` to check if `$STATE_FILE` exists in the project root. If it does, parse the JSON for:
-- `work_mode` — "repo" or "project". If this field is missing (v0.1.0 state file), do NOT default it -- treat it as absent so Phase 0a presents the first-time selection prompt. This lets users who upgrade from v0.1.0 explicitly choose their mode.
-- `repo_owner_name` — the repo used last time (derive from git remote if missing)
-- `github_project_number` — the project board used (null in repo mode)
-- `github_project_title` — project board display name (null in repo mode)
-- `planned_issues` — the remaining work queue
-- `last_session.date` — when the last session was
-- `last_session.current_issue` — issue number in progress
-- `last_session.current_phase` — which phase was active
-- `last_session.branch` — branch name
-- `last_session.worktree` — worktree path (avoid creating duplicates)
-- `last_session.completed_issues` — what was finished last time
-- `last_session.prs_created` — PRs opened last session
-- `last_session.prs_merged` — PRs merged last session
-- `last_session.issues_created` — issues created last session
+## Phase 0a: Mode Selection — `0a.mode`
 
-### 2. Search Episodic Memory
+If the state file has `work_mode`, ask whether to keep it (recommended). If it is absent (first
+run, or a pre-v0.2 state file), ask: **Repo mode** — GitHub Issues only, priority via P0–P3
+labels; **Project mode** — a GitHub Projects board with Status and Priority fields.
 
-Invoke `episodic-memory:search-conversations` to find recent sessions tagged with this project. Look for:
-- What was accomplished last session
-- Any blockers or decisions that carry forward
-- Context about the current issue if mid-work
+`$CK set --set work_mode=<repo|project>`. Repo mode skips Phase 0b.
 
-### 3. Check Git State
+## Phase 0b: Project Select (project mode) — `0b.project`, `0b.fields`
 
-```bash
-git branch --list | head -20
-git status --short
-git worktree list
-```
-
-Look for:
-- Uncommitted changes on a feature branch
-- Open worktrees from prior sessions
-- Branches that match issue numbers from the state file
-
-### 4. Present Resume Option
-
-If mid-work state is detected, present to the user:
-
-> "Last session ($DATE) you were working in **$WORK_MODE mode** on $REPO_OWNER_NAME.
-> Active issue: #$NUMBER -- Phase $PHASE (branch `$BRANCH`).
-> Resume where we left off, or start fresh with standup?"
-
-Use `AskUserQuestion` to get the user's choice:
-- **Resume** --> Jump directly to the phase recorded in state
-- **Fresh start** --> Proceed to Phase 0a
-
-If no prior state exists, proceed directly to Phase 0a.
-
----
-
-## Phase 0a: Mode Selection
-
-Choose how to work this repo.
-
-### 1. Check State for Previous Mode
-
-If `$STATE_FILE` has a `work_mode` value, offer to continue:
-
-> "Last session used **$WORK_MODE mode**. Continue with the same mode?"
->
-> - **Repo mode** -- work from GitHub Issues directly (no project board)
-> - **Project mode** -- work from a GitHub Projects board with status/priority columns
-
-### 2. First-Time Selection
-
-If no state file exists or `work_mode` is missing, ask:
-
-> "How do you want to work this repo?"
->
-> - **Repo mode** -- GitHub Issues only. Priority via P0-P3 labels. No project board needed.
-> - **Project mode** -- GitHub Projects board with Status and Priority fields.
-
-Use `AskUserQuestion` to get the user's choice.
-
-### 3. Store Mode
-
-```
-WORK_MODE=<selected: "repo" or "project">
-```
-
-If `WORK_MODE == "repo"`, skip Phase 0b and proceed directly to Phase 1.
-If `WORK_MODE == "project"`, proceed to Phase 0b.
-
----
-
-## Phase 0b: Project Select (project mode only)
-
-This phase runs only when `WORK_MODE == "project"`.
-
-### 1. List Available Projects
-
-```bash
-gh project list --owner "$REPO_OWNER_NAME" --format json --limit 20
-```
-
-If the org has no projects, try listing for the repo owner:
-```bash
-gh project list --format json --limit 20
-```
-
-### 2. Offer Default
-
-If `$STATE_FILE` has a `github_project_number`, highlight it:
-
-> "Last session used Project #$NUMBER -- '$TITLE'. Use the same project?"
-
-### 3. User Confirms
-
-Use `AskUserQuestion` to confirm or pick a different project. Store the selection:
-
-```bash
-PROJECT_NUMBER=<selected>
-PROJECT_TITLE="<selected title>"
-```
-
-### 4. Fetch Project Node ID
-
-The `gh project item-edit` command requires the GraphQL node ID, not the project number. Fetch it now:
-
-```bash
-PROJECT_ID=$(gh project view $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --jq '.id')
-```
-
-Store `PROJECT_ID` for all board update operations throughout the session.
-
-### 5. Load Project Fields
-
-```bash
-gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json
-```
-
-Look for the required fields:
-- **Status** — single select with values: Backlog, Ready, In Progress, In Review, Done
-- **Priority** — single select with values: P0-Critical, P1-High, P2-Medium, P3-Low
-
-If fields are missing, offer to create them (see "GitHub Project Board Setup" section at the end).
-
-Store field IDs and option IDs for use throughout the session:
-```
-STATUS_FIELD_ID=<id>
-PRIORITY_FIELD_ID=<id>
-STATUS_OPTIONS={backlog: <id>, ready: <id>, in_progress: <id>, in_review: <id>, done: <id>}
-PRIORITY_OPTIONS={p0: <id>, p1: <id>, p2: <id>, p3: <id>}
-```
-
----
+1. `gh project list --owner "$REPO_OWNER_NAME" --format json --limit 20` (if the owner is a
+   user rather than an org, `gh project list --format json --limit 20`). If the state file has
+   `github_project_number`, offer it first. Confirm with the user; keep `PROJECT_NUMBER` and
+   `PROJECT_TITLE`.
+2. `gh project item-edit` needs GraphQL node ids, so fetch them now:
+   ```bash
+   PROJECT_ID=$(gh project view $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --jq '.id')
+   gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json
+   ```
+   Expect **Status** (Backlog, Ready, In Progress, In Review, Done) and **Priority** (P0-Critical,
+   P1-High, P2-Medium, P3-Low). If either is missing, offer to create it using
+   `${CLAUDE_PLUGIN_ROOT}/references/setup-project-board.md`. Record `project_number`,
+   `project_title`, `project_id`, `status_field_id`, `status_options` (name → option id),
+   `priority_field_id`, `priority_options` with `$CK set` so later phases and the exit skill have
+   them.
 
 ## Phase 1: Standup
 
-Read the current state and present an organized status report. The format depends on the work mode.
+### `1.fetch`
 
-### Project Mode Standup
+Project mode: `gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --limit 100`.
 
-*Runs when `WORK_MODE == "project"`.*
-
-#### 1. Fetch Board Items
-
-```bash
-gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --limit 100
-```
-
-Parse each item for: title, status, priority, issue number, assignee, linked PR.
-
-#### 2. Determine "Last Session" Boundary
-
-Use `last_session.date` from `$STATE_FILE` if available. Otherwise use `$TODAY` minus 1 day. Items moved to "Done" after this date count as "shipped since last session."
-
-#### 3. Present Standup Report
-
-Format the board state into these categories:
-
-**What shipped since last session:**
-- List items in "Done" status that changed since the last session date
-- Include PR links if available
-
-**What's in progress:**
-- Items in "In Progress" or "In Review"
-- Note current branch/PR status
-
-**What's next by priority:**
-- Items in "Ready" status, sorted: P0 > P1 > P2 > P3
-- Within same priority, sort by issue number (lower = older = higher precedence)
-
-**Blockers:**
-- Items with labels containing "blocked" or "waiting"
-- Issues with unresolved dependency references in the body
-
-### Repo Mode Standup
-
-*Runs when `WORK_MODE == "repo"`.*
-
-#### 0. Ensure Priority Labels Exist
-
-Before fetching issues, verify that the repo has the expected priority labels. If any are missing, create them (see "Ensuring Priority Labels Exist" section at the end of this file). This only needs to run once per repo -- skip if labels were already confirmed in a prior session.
-
-#### 1. Fetch Issues
+Repo mode: make sure the P0–P3 labels exist (once per repo; see
+`${CLAUDE_PLUGIN_ROOT}/references/setup-project-board.md`), then:
 
 ```bash
-# Recently closed issues (shipped since last session)
 gh issue list --repo "$REPO_OWNER_NAME" --state closed --json number,title,closedAt,labels --limit 20
-
-# Open issues assigned to current user
 gh issue list --repo "$REPO_OWNER_NAME" --state open --assignee @me --json number,title,labels,milestone --limit 50
-
-# All open issues
 gh issue list --repo "$REPO_OWNER_NAME" --state open --json number,title,labels,milestone,assignees,createdAt --limit 50
 ```
 
-#### 2. Present Standup Report
+### `1.report`
 
-**What shipped since last session:**
-- Issues closed after `last_session.date`
-- Include linked PR if available
+"Since last session" means after `last_session.date` (yesterday if unknown). Present:
 
-**What's in progress:**
-- Open issues assigned to current user
-- Cross-reference with `last_session.current_issue` and active branches
+- **Shipped since last session** — Done or closed since then, with PR links.
+- **In progress** — In Progress / In Review items, or open issues assigned to the user; cross-check
+  against `progress.issue` and active branches.
+- **Next by priority** — Ready items (project) or open issues (repo) sorted P0 > P1 > P2 > P3,
+  then milestone due date, then oldest first; unlabelled issues last.
+- **Blockers** — "blocked" / "waiting" labels, unresolved dependency references in issue bodies.
 
-**What's next by priority:**
-- Open issues with priority labels, sorted: P0-Critical > P1-High > P2-Medium > P3-Low
-- Within same priority, sort by milestone due date (closest first), then issue number (oldest first)
-- Issues without priority labels listed last
+### `1.recommend`
 
-**Blockers:**
-- Issues with "blocked" or "waiting" labels
+Propose 2–4 issues for today with a one-line reason each (priority, dependency chain, quick win).
+Offer more than fits in a day so "what's next" is always clear.
 
-### Recommendation (both modes)
+### GATE: work queue
 
-- Propose 2-4 issues for today's work based on priority
-- Include more than can realistically be completed so there's always a clear "what's next"
-- Explain why each is recommended (priority, dependency chain, quick win, etc.)
+`$CK gate 1`. Ask which issues, in what order. Options: the recommended set in recommended order
+(first), then each candidate singly, then "I'll type an order". The first issue becomes the active
+issue:
 
-### GATE: User Picks Work Queue
-
-Use `AskUserQuestion`:
-
-> "Here's my recommendation for today: #$A (P1), #$B (P1), #$C (P2). Which issues do you want to work on today, and in what order?"
-
-Store the user's response as the ordered work queue:
-
+```bash
+$CK start-issue $ISSUE_NUMBER --phase 2 --set work_mode=$WORK_MODE --set planned_issues='[<ordered numbers>]'
 ```
-PLANNED_ISSUES=[<ordered issue numbers>]
-ACTIVE_ISSUE=<first issue number>
-ISSUE_NUMBER=$ACTIVE_ISSUE
-```
-
-The first item becomes the **active issue**. Track `PLANNED_ISSUES` throughout the session -- the exit skill writes it to the state file.
-
----
 
 ## Phase 2: Brainstorm
 
-Collaborative design for the active issue.
+### `2.load`
 
-### 1. Load Issue Context
+`gh issue view $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --json title,body,comments,labels,assignees,milestone`,
+plus the source files the issue references, linked issues and PRs, and the relevant tests if it
+is a bug.
 
-```bash
-gh issue view $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --json title,body,comments,labels,assignees,milestone
-```
+### `2.brainstorm`
 
-Also read:
-- Any source files referenced in the issue body
-- Linked issues or PRs mentioned in comments
-- Related test files if the issue is a bug fix
+Invoke `superpowers:brainstorming` and follow it completely. It explores the problem, asks
+clarifying questions, proposes approaches, gets the design approved, and saves
+`docs/superpowers/specs/$TODAY-<topic>-design.md`. Design defects are the expensive kind, so do
+not shortcut this even for issues that look small.
 
-### 2. Invoke Brainstorming
-
-Use the `Skill` tool to invoke `superpowers:brainstorming`.
-
-The brainstorming skill will:
-- Explore the problem space
-- Ask clarifying questions
-- Propose approaches
-- Present a design for approval
-- Save a design doc to `docs/superpowers/specs/$TODAY-<topic>-design.md`
-
-Follow the brainstorming skill's complete flow. Do not shortcut it.
-
-### 3. Update Board Status (project mode only)
-
-If `WORK_MODE == "project"`, update the project board item to "In Progress":
+### `2.board` (project mode; otherwise `$CK gate 2 --skip board`)
 
 ```bash
-# Find the item ID for this issue (cache for reuse in later phases)
-ITEM_ID=$(gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json | jq -r '.items[] | select(.content.number? == '$ISSUE_NUMBER') | .id')
-
-# Update status to "In Progress"
-gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_IN_PROGRESS_ID
+ITEM_ID=$(gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json \
+  | jq -r '.items[] | select(.content.number? == '$ISSUE_NUMBER') | .id')
+gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID \
+  --single-select-option-id $STATUS_IN_PROGRESS_ID
+$CK set --set item_id=$ITEM_ID
 ```
 
-Cache `$ITEM_ID` -- it is reused in Phase 3 (Step 8 PR Review, via `/co-dwerker:pr-review`) and Phase 5 (Step 5 Board Update) for board updates.
+### `2.discovered`
 
-### 4. Discovered Work Items
+Brainstorming often surfaces new bugs or sub-tasks. For each one, ask whether to create an issue
+(invoke `co-dwerker:new-issue`) and whether it joins today's queue
+(`$CK set --set planned_issues='[...]'`).
 
-During brainstorming, new bugs, sub-tasks, or related work items may be identified. When this happens:
+### GATE: design approval
 
-1. Note the discovered item and ask the user: "I've identified a potential new issue: **[description]**. Should I create a GitHub Issue for it?"
-2. If yes, invoke the `/co-dwerker:new-issue` flow (Steps 1-3 from new-issue.md).
-3. In project mode, the new-issue flow will also add it to the board with priority/status prompts.
-4. Ask: "Add this to today's work queue, or leave it for a future session?"
-5. If added to queue, append the new issue number to `PLANNED_ISSUES`.
-
-### GATE: Design Approval
-
-The brainstorming skill handles its own approval gate. Once the user approves the design doc, proceed to Phase 3.
-
----
+Brainstorming holds its own approval gate. Once the design is approved, `$CK gate 2` and go to
+Phase 3.
 
 ## Phase 3: Execute
 
-Autonomous implementation. After design approval, the following happens without user intervention until the PR is ready.
+Autonomous from here until a PR is ready for review. Two captures run before any code changes so
+the later checks can tell "this PR broke it" from "it was already broken".
 
-### 1. Baseline Tests
+### `3.1` Baseline tests
 
-Capture the repo's pre-existing test state **before any coding starts** so the post-implementation verification (Step 5) can distinguish regressions from already-broken tests. This is informational only — failures do not block the workflow.
+Follow `${CLAUDE_PLUGIN_ROOT}/references/baseline-tests.md`. Capture-and-continue; no gate.
 
-**Read `references/baseline-tests.md`** for the detection cascade, suite-run mechanics, `.git/info/exclude` write pattern, schema for `.co-dwerker.baseline-tests.json`, and skip-case behavior. Follow its instructions to perform the capture, then return here.
+### `3.1b` Baseline local app
 
-#### Surface a summary to the user (no gate)
+Follow `${CLAUDE_PLUGIN_ROOT}/references/local-app.md` §1–3. Give the capture command a Bash
+`timeout` of 240000 ms. The only gate here is a boot failure on the *unmodified* branch, because
+without a baseline boot the verification diff in Step 5a has nothing to compare against.
 
-For a baseline with failures:
+### `3.2` Plan
 
-> "Baseline test run complete. Capturing pre-existing state before any code changes:
-> - pytest: 142 passed, **3 failed**, 5 skipped (47s)
-> - ruff: clean
-> - black: clean
->
-> Pre-existing failures are recorded in `.co-dwerker.baseline-tests.json`. These will be excluded from regression checks during verification. Proceeding to local-app baseline."
+Invoke `superpowers:writing-plans`; it turns the design doc into an implementation plan.
 
-For a clean baseline:
+### `3.3` Isolate
 
-> "Baseline test run clean (pytest: 142 passed, ruff/black clean). Proceeding to local-app baseline."
-
-For a skip (no test commands detected):
-
-> "No test commands detected (checked `CLAUDE.md`, manifests). Skipping test baseline. Verification will run whatever's available after implementation."
-
-Do not call `AskUserQuestion` here. Continue to Step 1b.
-
-### 1b. Baseline Local App
-
-Capture the unmodified branch's local-app behavior — boot status, errors, and warnings — **before any coding starts**, so the post-implementation Step 5a can distinguish regressions from pre-existing app issues. The downstream diff treatment is in Step 5a below.
-
-**Read `references/baseline-localapp.md`** for the detection cascade, pre-flight checks, boot detection (ready signal + HTTP probe), 90-second idle watch, log capture rules, normalization pipeline, JSON schema, file-write instructions (including `.git/info/exclude` propagation), gate behavior on boot failure, and the 15-minute cumulative cap. Follow its instructions end to end, then return here.
-
-After the reference's instructions complete, route based on the outcome:
-
-- **Successful baseline captured** (file written): surface the appropriate summary template below to the user and continue to Step 2.
-- **No app detected** (no file written): surface the skip template below and continue to Step 2.
-- **Boot failure, gate option 1 (fix and retry)**: loop back to the top of Step 1b and re-run the reference's instructions.
-- **Boot failure, gate option 2 (skip baseline)**: the reference writes a baseline file with `boot_status: "skipped"` so Step 5a knows you opted out. Surface the skip template below and continue to Step 2.
-- **Boot failure, gate option 3 (cancel)**: exit `/co-dwerker:work` cleanly. Do not proceed to Step 2.
-
-#### Surface a summary to the user (no gate when baseline succeeded)
-
-For a clean baseline:
-
-> "Local app baseline clean: {app type} booted in {N}s with no errors during the 90s observation window. {M} warnings captured (recorded for diff, not blocking). Proceeding to plan/implement."
-
-For a baseline with errors/warnings captured (but successful boot):
-
-> "Local app baseline captured: {app type} booted successfully. {N} errors and {M} warnings recorded in `.co-dwerker.baseline-localapp.json`. These will be excluded from regression checks during Step 5a. Proceeding to plan/implement."
-
-For a skip (no app detected):
-
-> "No runnable application detected. Skipping local app baseline. Proceeding to plan/implement."
-
-Continue to Step 2.
-
-### 2. Plan
-
-Use the `Skill` tool to invoke `superpowers:writing-plans`.
-
-The writing-plans skill will create a detailed implementation plan from the design doc. Follow its full flow.
-
-### 3. Isolate
-
-Use the `Skill` tool to invoke `superpowers:using-git-worktrees` to create an isolated worktree for this work.
-
-Record the worktree path and branch name for the state file. If either `.co-dwerker.baseline-tests.json` or `.co-dwerker.baseline-localapp.json` was written in Step 1 / Step 1b, copy it into the worktree root and also add it to the worktree's local exclude so intermediate commits there do not pick it up:
+Invoke `superpowers:using-git-worktrees`. Record what it did (conventions §8):
 
 ```bash
+$CK set --set branch=<name> --set worktree=<path> --set worktree_native=<true|false>
+```
+
+Then carry the baseline artifacts into the worktree so Steps 5 and 5a can read them, and keep
+them out of the worktree's commits. `$MAIN_CHECKOUT` is where Steps 1 and 1b ran; with a native
+worktree the session's CWD has already moved, so use the path you recorded.
+
+```bash
+EXCLUDE=$(git -C "$WORKTREE_PATH" rev-parse --git-path info/exclude)
 for f in .co-dwerker.baseline-tests.json .co-dwerker.baseline-localapp.json; do
-  if [ -f "$f" ]; then
-    cp "$f" "$WORKTREE_PATH/$f"
-    grep -qxF "$f" "$WORKTREE_PATH/.git/info/exclude" 2>/dev/null \
-      || echo "$f" >> "$WORKTREE_PATH/.git/info/exclude"
+  if [ -f "$MAIN_CHECKOUT/$f" ]; then
+    cp "$MAIN_CHECKOUT/$f" "$WORKTREE_PATH/$f"
+    grep -qxF "$f" "$EXCLUDE" 2>/dev/null || echo "$f" >> "$EXCLUDE"
   fi
 done
 ```
 
-Note: a linked worktree's `.git` is a file pointing to `<main>/.git/worktrees/<name>/`; that directory has its own `info/exclude`. The block above resolves that automatically because `$WORKTREE_PATH/.git/info/exclude` follows the gitdir indirection.
+### `3.4` Implement
 
-### 4. Implement
+Invoke `superpowers:executing-plans`, or `superpowers:subagent-driven-development` when the plan
+has independent tasks (two subagents at a time). Follow it through its TDD cycles and commits.
 
-Use the `Skill` tool to invoke `superpowers:executing-plans` (or `superpowers:subagent-driven-development` if the plan has independent tasks).
+### `3.5` Verify
 
-Follow the execution skill's full flow including TDD cycles and commits.
+Invoke `superpowers:verification-before-completion`: full test suite, linters, and the success
+criteria from the design doc.
 
-### 5. Verify
+**Baseline diff.** If `.co-dwerker.baseline-tests.json` exists, compare failing test ids per
+suite by exact match:
 
-Use the `Skill` tool to invoke `superpowers:verification-before-completion`.
+- failing then and now → pre-existing; report it, do not block on it.
+- failing now only → regression; fix before continuing.
+- failing then, passing now → mention it as a bonus.
 
-The verification skill will:
-- Run the full test suite (per project's CLAUDE.md -- typically `uv run pytest`)
-- Run linters (typically `uv run ruff check . && uv run black --check .`)
-- Verify no regressions
-- Confirm all success criteria from the design doc are met
+Lint suites and any suite the baseline marked `tooling_missing` or `timeout` get no carve-out:
+exit 0 or fix. If a suite has `failing_tests_truncated: true`, a "new" failure may be a
+pre-existing one that fell off the 50-entry list; confirm with `git stash` and a targeted run
+before treating it as new, and if you cannot confirm, fix it. With no baseline file, every failure
+is a regression.
 
-**Baseline diff:** If `.co-dwerker.baseline-tests.json` exists in the working directory, read it and compute the diff between current failures and the baseline by exact string match of test identifiers within the same `name` (suite name):
+### `3.5a` Local app verification
 
-- **Pre-existing failures** (failing in both baseline and now) -- report to the user but do **not** block proceeding. These were broken before this work started.
-- **New failures** (failing now, passing in baseline) -- treat as **regressions** and fix before continuing. These are caused by the current work.
-- **Newly passing** (failing in baseline, passing now) -- report as a positive side effect.
+Follow `${CLAUDE_PLUGIN_ROOT}/references/local-app.md` §4–5. This is a phase gate: Step 6 does not
+start until Step 5a is complete under one of the three definitions in §5 (clean diff, a skip the
+user chose with a recorded reason, or no runnable app). After fixing anything,
+`$CK mark 3.5a in_progress` and re-run from detection. Capture commands get 240000 ms.
 
-Linters (`kind: "lint"`) and any suite that the baseline marked `tooling_missing` or `timeout` are treated normally (no baseline comparison -- exit_code 0 means clean, non-zero must be fixed).
+### `3.6` Changelog
 
-If the baseline marked any suite's `failing_tests_truncated: true`, warn the user: "Baseline failing-tests list was truncated to 50 entries for that suite; a 'new failure' below may actually be a pre-existing failure that didn't fit in the truncated list. Verify manually (e.g., `git stash && pytest path::to::test_name`) before treating any truncated-suite failure as a regression. If you can't verify it was pre-existing, treat it as a regression and fix it — the truncation warning is not a license to skip the fix."
+Update `CHANGELOG.md` (line-by-line technical changes with the reason for each) and
+`RELEASE_NOTES.md` (human-readable features, behavior changes, fixes, known issues) following the
+repo's `CLAUDE.md`. Commit these separately from the implementation commits.
 
-**If `.co-dwerker.baseline-tests.json` does not exist** (Step 1 detected no tests, or the workflow is running in a repo that lacked the baseline step in a prior session): treat all current test failures as regressions and fix before proceeding. There is no pre-existing-failures carve-out without a baseline.
+### `3.7` Create PR
 
-If verification fails on **new** failures, fix the issues and re-verify. Do not proceed until clean. Pre-existing failures alone do not block.
-
-### 5a. Local App Verification
-
-After automated tests pass, fully boot the application(s) locally and validate runtime behavior against the Step 1b baseline. This is the last fully-local checkpoint before opening a PR — exhaust every available means of validating the work here. Non-destructive only: use local mocks / dev configs; never call production services or mutate external state.
-
-This is a **phase-gating step**. It cannot be silently skipped. The only valid completions are a clean diff against the baseline, an `AskUserQuestion`-confirmed skip with a recorded reason, or a `.co-dwerker.json`-cached "no runnable app" decision.
-
-**Read `references/local-app-verification.md`** for the detection cascade reuse, the auto-remediation pre-flight (port conflicts on co-dwerker-owned PIDs, env var sourcing from templates, missing-tool escalation), boot/idle/log mechanics (same 90s idle watch as the baseline), the blocker gate via `AskUserQuestion`, the no-app-detected gate with `.co-dwerker.json` caching, the baseline diff rules (including per-warning dismissal for new warnings), the `local_app_pids` / `local_app_skip_reason` / `dismissed_warnings` schema additions, and the PR-description integration for skips and dismissed warnings. Follow its instructions end to end, then return here.
-
-After the reference's instructions complete, route based on the outcome:
-
-- **Clean pass** (all apps healthy, no new errors, all new warnings dismissed): surface the clean-pass summary template below and continue to Step 6.
-- **Pass with dismissed warnings** (clean boot, new warnings handled via dismiss-for-PR or dismiss-permanently): surface the dismissed-warnings template below and continue to Step 6. Step 7 must include the per-warning dismissal reasons in the PR test plan.
-- **User-acknowledged skip** (the user chose option 2 at the blocker gate and provided a reason): surface the skip template below and continue to Step 6. Step 7 must include the skip reason in the PR test plan.
-- **No runnable app** (`.co-dwerker.json` has `local_app_skip: true`, or the user just selected option 1 at the no-app-detected gate): surface the no-app template below and continue to Step 6.
-- **Blocker requiring fix** (new errors or warnings the user marked as regressions, or a healthy→boot-failure regression): fix the issues per the reference's "block" rules, then re-run Step 5a from the top. Do not advance.
-- **User-chosen cancel** (option 3 at the blocker gate): exit `/co-dwerker:work` cleanly. Do not advance to Step 6.
-
-#### Surface a summary to the user
-
-For a clean pass:
-
-> "Local app verification clean: {app type(s)} booted healthy, 90s idle watch ran to completion, no new errors, no new warnings. Proceeding to changelog."
-
-For a pass with dismissed warnings:
-
-> "Local app verification passed with {N} dismissed warnings:
-> - "{raw warning truncated to 80 chars}" — dismissed {for this PR | permanently}{, reason: '...'}.
-> - ...
->
-> {K} of these were dismissed permanently for this repo and will be filtered in future baselines. The PR description will include the per-PR dismissal reasons. Proceeding to changelog."
-
-For a user-acknowledged skip:
-
-> "Local app verification skipped at your direction. Reason recorded: '{local_app_skip_reason}'. This reason will be included in the PR description's test plan so reviewers see it. Proceeding to changelog."
-
-For no runnable app:
-
-> "Local app verification skipped: this repo is marked as having no runnable application ({source: cached in `.co-dwerker.json` | just confirmed by you}). Proceeding to changelog."
-
-### 6. Changelog
-
-Update `CHANGELOG.md` and `RELEASE_NOTES.md` per the project's CLAUDE.md conventions:
-- CHANGELOG.md: line-by-line technical changes with reasons
-- RELEASE_NOTES.md: human-readable feature/fix descriptions
-
-Commit changelog updates separately from implementation code.
-
-### 7. Create PR
-
-Before drafting the body, read `$STATE_FILE.last_session.local_app_skip_reason` and any per-PR dismissed-warning reasons captured during Step 5a (the reference instructs Step 5a to keep these in memory for this step). Compose the Test Plan section accordingly:
-
-- **Clean Step 5a pass:** use the default checklist (no extra line).
-- **User-acknowledged Step 5a skip:** add `- [ ] Local app verification: SKIPPED — <local_app_skip_reason>`.
-- **Step 5a passed with dismiss-for-this-PR warnings:** add a `Local app verification: PASS with dismissed warnings:` block followed by one bullet per warning, formatted as `"<raw warning>" — dismissed: <reason>`.
-- **`local_app_skip: true` in `.co-dwerker.json` (no runnable app):** add `- [ ] Local app verification: N/A — repo has no runnable application`.
+Compose the test plan from `progress.context` (local-app.md §6 lists the local-app lines), then:
 
 ```bash
 gh pr create --title "<concise title>" --body "$(cat <<'EOF'
 ## Summary
-<bullet points describing what changed and why>
+<what changed and why, as bullets>
 
 Closes #$ISSUE_NUMBER
 
 ## Test plan
-- [ ] All existing tests pass
-- [ ] New tests cover the changes
-- [ ] Linting passes (ruff + black)
-<conditional local-app verification line(s) per the rules above>
+- [x] Existing tests pass; new tests cover the change
+- [x] Linting passes
+<local app verification line(s) when applicable>
 
 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
+$CK set --set pr_number=<number> --set pr_url=<url>
 ```
 
-### 8. Review, Address Findings, and User Approval
+### `3.8` Review and approval
 
-Use the `Skill` tool to invoke `co-dwerker:pr-review`.
+Invoke `co-dwerker:pr-review`. It runs `pr-review-toolkit:review-pr`, fixes findings until the
+review is clean, moves the board item to In Review in project mode, surfaces discovered work,
+and holds its own user-approval gate. It reads `pr_number` and the rest from `progress.context`,
+so it will not ask which PR. When it returns, `$CK gate 3` and go to Phase 4.
 
-The pr-review command will:
-- Run `pr-review-toolkit:review-pr` on the new PR
-- Address any review findings (fix, re-verify, commit, push -- loop until clean)
-- Update the project board to "In Review" (project mode only)
-- Surface any discovered work items
-- Present the PR to the user for approval via its own GATE
+## Phase 4: Docs — `4.docs`
 
-The current conversation already has `$PR_NUMBER`, `$ISSUE_NUMBER`, `$REPO_OWNER_NAME`, and `$WORK_MODE` in context -- the pr-review command will detect this and skip its identification prompt.
-
-Wait for the pr-review command to complete (including user approval) before proceeding to Phase 4.
-
----
-
-## Phase 4: Docs
-
-Update companion documentation. This phase delegates to the standalone `/co-dwerker:docs` command.
-
-### Invoke Docs Command
-
-Use the `Skill` tool to invoke `co-dwerker:docs`.
-
-The current conversation already has `$ISSUE_NUMBER`, `$PR_NUMBER`, and `$REPO_OWNER_NAME` in context -- the docs command will detect this and skip its "identify the subject" prompt.
-
-If the docs command determines there is no docs config or no doc impact, it will skip automatically.
-
-### GATE: User Approval
-
-The docs command handles its own confirmation. Once the user approves the docs PR (or the command skips), proceed to Phase 5.
-
----
+Invoke `co-dwerker:docs`. It reads the PR and issue from `progress.context`, checks
+`.co-dwerker.json` for a companion docs repo, and skips cleanly when there is none or the change
+has no user-facing documentation impact. If it opens a docs PR, `$CK set --set docs_pr_number=<n>`.
+Its confirmation is the gate for this phase.
 
 ## Phase 5: Close
 
-Merge approved PRs, verify CI, and clean up.
+### `5.merge`
 
-### 1. Merge Code PR
+`gh pr merge $PR_NUMBER --squash --delete-branch`
 
-```bash
-gh pr merge $PR_NUMBER --squash --delete-branch
-```
-
-### 2. Verify CI
+### `5.ci`
 
 ```bash
-# Wait for CI to complete (check up to 5 times with 30s intervals)
-gh run list --branch main --limit 1 --json status,conclusion
+RUN_ID=$(gh run list --branch main --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run watch "$RUN_ID" --exit-status        # Bash timeout 600000
 ```
 
-If CI fails, alert the user immediately:
+If CI fails, tell the user immediately with the run URL. That needs attention before anything
+else happens.
 
-> "CI failed after merging PR #$PR_NUMBER. Run: $RUN_URL. This needs attention before continuing."
+### `5.docs-merge` (when `docs_pr_number` is set; otherwise `--skip docs-merge`)
 
-### 3. Merge Docs PR (if exists)
+`gh pr merge $DOCS_PR_NUMBER --repo "$DOCS_REPO" --squash --delete-branch`
 
-```bash
-gh pr merge $DOCS_PR_NUMBER --repo "$DOCS_REPO" --squash --delete-branch
-```
+### `5.close-issue`
 
-### 4. Close Issue
+If the merge did not auto-close it:
+`gh issue close $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --reason completed`
 
-If the issue wasn't auto-closed by the PR merge:
+### `5.board` (project mode; otherwise `--skip board`)
 
-```bash
-gh issue close $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --reason completed
-```
+`gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_DONE_ID`
 
-### 5. Update Board (project mode only)
+### `5.cleanup`
 
-If `WORK_MODE == "project"`, update the project board item status to "Done":
-
-```bash
-gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_DONE_ID
-```
-
-### 6. Clean Up
-
-```bash
-# Delete local feature branch if it still exists
-git branch -d "$BRANCH_NAME" 2>/dev/null
-
-# Remove worktree if one was created
-git worktree remove "$WORKTREE_PATH" 2>/dev/null
-
-# Remove the baseline capture files from both worktree and main repo root
-# (ephemeral per-issue artifacts from Phase 3 Step 1 and Step 1b, copied into worktree in Phase 3 Step 3)
-rm -f "$WORKTREE_PATH/.co-dwerker.baseline-tests.json" 2>/dev/null
-rm -f "$WORKTREE_PATH/.co-dwerker.baseline-localapp.json" 2>/dev/null
-rm -f .co-dwerker.baseline-tests.json
-rm -f .co-dwerker.baseline-localapp.json
-
-# Clean up docs repo clone if we created one
-# (only if it was freshly cloned for this session)
-```
-
----
+- Worktree: native → `ExitWorktree` with `action: "remove"`; fallback → from the main checkout,
+  `git worktree remove "$WORKTREE_PATH"`. Then `git branch -D "$BRANCH_NAME"` if it survived the
+  merge.
+- Delete the per-issue artifacts in the main checkout (and in the worktree if it still exists):
+  `.co-dwerker.baseline-tests.json`, `.co-dwerker.baseline-localapp.json`,
+  `.co-dwerker.verify-localapp.json`, `.co-dwerker.localapp-diff.json`,
+  `.co-dwerker.localapp-*.log`.
+- Remove a docs-repo clone only if this session created it (`docs_repo_cloned`).
+- `$CK gate 5` (with the skips that apply), then `$CK finish-issue`.
 
 ## Phase 6: Next
 
-Loop back or wrap up.
+### `6.progress`
 
-### 1. Show Progress
+Show what was completed today and the remaining queue (project mode: item list; repo mode: open
+issues with labels).
 
-**Project mode:**
-```bash
-gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --limit 100
-```
+### `6.queue`
 
-**Repo mode:**
-```bash
-gh issue list --repo "$REPO_OWNER_NAME" --state open --json number,title,labels --limit 20
-```
+Queue not empty: ask "Issue #N (title) is next in the queue. Start brainstorming?" Options:
+**Start #N (Recommended)** → Phase 2 after `$CK start-issue N --phase 2`; **Pick a different
+issue**; **Wrap up** → suggest `/co-dwerker:exit`.
 
-Present a condensed view:
-- Completed today: issue numbers and titles
-- Remaining in queue: ordered list
+Queue empty: say so and offer `/co-dwerker:new-issue`, picking an existing issue, or
+`/co-dwerker:exit`.
 
-### 2. Check Work Queue
+## First-run setup
 
-If there are remaining issues in today's planned work queue:
-
-> "Issue #$ISSUE_NUMBER ($TITLE) is next in the queue. Ready to start brainstorming?"
-
-Use `AskUserQuestion` for confirmation. If confirmed, loop back to **Phase 2** with the next issue as the active issue.
-
-### 3. Queue Empty
-
-If all planned issues are done:
-
-> "All planned issues for today are complete! You can:
-> 1. Create a new issue (`/co-dwerker:new-issue`)
-> 2. Pick an existing issue to work on
-> 3. Run `/co-dwerker:exit` to wrap up the session"
-
-### 4. User Options
-
-At any point in the Next phase, the user can:
-- Pick a new issue not in the original queue
-- Create a new issue via `/co-dwerker:new-issue`
-- Re-prioritize remaining items
-- Invoke `/co-dwerker:exit` to end the session
-
----
-
-## First-Run Setup
-
-For project board field creation (project mode) and priority label creation (both modes), read and follow `references/setup-project-board.md`.
+Project board fields (project mode) and P0–P3 labels (both modes):
+`${CLAUDE_PLUGIN_ROOT}/references/setup-project-board.md`.

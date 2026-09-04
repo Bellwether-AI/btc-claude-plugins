@@ -1,231 +1,97 @@
 ---
-description: Create or update companion documentation for a PR or Issue. Use when writing docs for a docs repo, updating documentation, creating doc PRs, or documenting recent changes. Asks what PR or Issue to document when run standalone.
+name: docs
+description: Use when the user wants to write or update companion documentation for a change — documenting a PR or issue, updating a docs repo, or opening a docs PR. Also use for "document this", "update the docs for #N", or "write the docs PR". Invoked by /co-dwerker:work Phase 4 after code-PR approval.
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py *)
 ---
+
 # Co-Dwerker: Docs
 
-Create or update companion documentation in an external docs repo for a given PR or Issue. Can be invoked standalone at any time, or is called by the `/co-dwerker:work` workflow after code PR approval.
+Create or update documentation in a project's companion docs repo for a PR, an issue, or a
+described change. Works standalone at any time and is called by `/co-dwerker:work` at Phase 4.
 
-**Note:** This command handles **companion docs repo** updates only. CHANGELOG.md and RELEASE_NOTES.md updates in the code repo are handled separately by the `/co-dwerker:work` execute phase.
+Scope: the **companion docs repo** only. `CHANGELOG.md` and `RELEASE_NOTES.md` in the code repo
+belong to the work skill's Step 6.
 
-## Environment
+Conventions (environment, model policy, asking, `gh` errors, `.co-dwerker.json` schema):
+`${CLAUDE_PLUGIN_ROOT}/references/conventions.md`. If `REPO_OWNER_NAME` is empty, fall back to
+`repo_owner_name` in `.co-dwerker.state.json`, and failing that ask for `owner/repo`.
 
-```bash
-TODAY=$(date +%Y-%m-%d)
-STATE_FILE=".co-dwerker.state.json"
-CONFIG_FILE=".co-dwerker.json"
-REPO_REMOTE=$(git remote get-url origin 2>/dev/null)
-REPO_OWNER_NAME=$(echo "$REPO_REMOTE" | sed -E 's|.*github\.com[:/]||;s|\.git$||')
-```
+## 1. Identify the subject
 
-If `REPO_OWNER_NAME` is empty (not in a git repo or no remote):
-1. Check `$STATE_FILE` for `repo_owner_name`.
-2. If found, use it and tell the user: "Using **$SAVED_REPO** from your last session."
-3. If not found, ask: "Which repo are these docs for? Provide the `owner/repo` name."
+**From the work skill.** `.co-dwerker.state.json` → `progress.context.pr_number` and
+`progress.issue` are set. Say "Documenting PR #N (issue #M)" and go to step 2.
 
-**GitHub hosting guard:** If `REPO_REMOTE` does not contain `github.com`, stop and tell the user: "co-dwerker requires a GitHub-hosted repository."
+**Standalone.** Ask what to document. Options: **A PR number**, **An issue number**,
+**A description of the change**. Then:
 
-**Error handling:** If any `gh` CLI command fails during the docs workflow, report the error to the user and ask how to proceed rather than silently continuing.
+- PR: `gh pr view $PR_NUMBER --repo "$REPO_OWNER_NAME" --json title,body,files,commits,headRefName`;
+  take `$ISSUE_NUMBER` from a `Closes #N` if present.
+- Issue: `gh issue view $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --json title,body,comments,labels`,
+  and the most recent merged PR from
+  `gh pr list --repo "$REPO_OWNER_NAME" --state merged --search "closes #$ISSUE_NUMBER" --json number,title`.
+- Description: use it as-is; PR and issue numbers are null.
 
-## Model Preference
+## 2. Docs config
 
-When dispatching subagents via the `Agent` tool during documentation work, always set `model: "opus"`. Never use `model: "haiku"`. Use `"sonnet"` as minimum fallback.
+Read `docs_repo` and `docs_path` from `.co-dwerker.json`. If missing, ask: **Configure a docs repo
+now** (take `org/repo` and the path within it; merge into `.co-dwerker.json`) or **Skip
+documentation** (end with a note that `.co-dwerker.json` can be edited later).
 
----
+## 3. Locate or clone the docs repo
 
-## Step 1: Identify the Subject
+Look for an existing clone as a sibling (`../<name>`, `../../<name>`). Otherwise
+`gh repo clone "$DOCS_REPO" "../<name>"` and remember that this session created it
+(`checkpoint.py set --set docs_repo_cloned=true` when running inside the work skill).
 
-Determine what to document. This step adapts based on how the command was invoked.
+In the docs repo: `git checkout main`, `git pull origin main`, then a branch named
+`docs/$ISSUE_NUMBER-<short-description>` (or `docs/$TODAY-<slug>` with no issue).
 
-### If invoked with context (from `/co-dwerker:work` Phase 4):
+## 4. Assess the documentation impact
 
-The calling workflow has `$ISSUE_NUMBER`, `$PR_NUMBER`, and `$REPO_OWNER_NAME` already set in the conversation context. Check whether these values are available from earlier in the conversation (they will be if Phase 3 just completed). If all three are present, confirm with the user:
+Read the PR diff (`gh pr diff $PR_NUMBER --repo "$REPO_OWNER_NAME"`) or the issue. Then:
 
-> "Documenting changes from PR #$PR_NUMBER (Issue #$ISSUE_NUMBER). Proceeding to check docs config."
+- New feature → a new doc page under `$DOCS_PATH`.
+- Changed behavior → update the pages that describe the component.
+- Bug fix → update a known-issues or troubleshooting section if one exists.
+- No user-facing impact → say so and ask: **Skip docs (Recommended)** (clean up the branch) or
+  **Write something anyway**.
 
-Skip to Step 2.
+## 5. Write
 
-### If invoked standalone:
+Read a few existing pages in `$DOCS_PATH` first and match their structure, tone, and front matter.
+Then create or update the files identified above.
 
-Use `AskUserQuestion`:
-
-> "What would you like to document? Provide one of:
-> - A **PR number** (e.g., #42)
-> - An **Issue number** (e.g., #15)
-> - A **description** of what to document"
-
-Based on the response:
-
-- **PR number provided:**
-  ```bash
-  gh pr view $PR_NUMBER --repo "$REPO_OWNER_NAME" --json title,body,files,commits,headRefName
-  ```
-  Also check if the PR closes an issue to get `$ISSUE_NUMBER`.
-
-- **Issue number provided:**
-  ```bash
-  gh issue view $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --json title,body,comments,labels
-  ```
-  Check for linked/merged PRs:
-  ```bash
-  gh pr list --repo "$REPO_OWNER_NAME" --state merged --search "closes #$ISSUE_NUMBER" --json number,title
-  ```
-  Use the most recent merged PR as `$PR_NUMBER` if one exists.
-
-- **Description provided:** Use the description directly. Set `$ISSUE_NUMBER` and `$PR_NUMBER` to null.
-
----
-
-## Step 2: Check Docs Config
-
-Read `$CONFIG_FILE` (`.co-dwerker.json`) for `docs_repo` and `docs_path`.
+## 6. Open the docs PR
 
 ```bash
-# Read the config file from the project root
-```
-
-**If no config file exists or `docs_repo` is null/missing:**
-
-Use `AskUserQuestion`:
-
-> "No companion docs repo is configured for this project. Would you like to:
-> 1. **Configure one now** -- provide the `org/repo` and path within it
-> 2. **Skip documentation** for now"
-
-If the user provides a docs repo, update `.co-dwerker.json`:
-
-```json
-{
-  "docs_repo": "Org/RepoName",
-  "docs_path": "path/to/docs"
-}
-```
-
-If skipped, end the command with a message: "Skipping documentation. You can configure a docs repo later by editing `.co-dwerker.json`."
-
-**Store the values:**
-```
-DOCS_REPO=<org/repo>
-DOCS_PATH=<path within docs repo>
-```
-
----
-
-## Step 3: Locate or Clone Docs Repo
-
-Check if the docs repo is already cloned locally:
-
-```bash
-# Check common sibling locations relative to the code repo
-ls -d "../$(basename $DOCS_REPO)" 2>/dev/null
-ls -d "../../$(basename $DOCS_REPO)" 2>/dev/null
-```
-
-If not found, clone it:
-
-```bash
-gh repo clone "$DOCS_REPO" "../$(basename $DOCS_REPO)"
-```
-
-Create a feature branch in the docs repo:
-
-```bash
-cd "../$(basename $DOCS_REPO)"
-git checkout main && git pull origin main
-```
-
-If `$ISSUE_NUMBER` is available:
-```bash
-git checkout -b "docs/$ISSUE_NUMBER-<short-description>"
-```
-
-If no issue number (description-only invocation):
-```bash
-git checkout -b "docs/$TODAY-<slug-from-description>"
-```
-
----
-
-## Step 4: Analyze Doc Impact
-
-Determine what documentation to create or update.
-
-**If a PR was provided**, read the PR diff:
-```bash
-gh pr diff $PR_NUMBER --repo "$REPO_OWNER_NAME"
-```
-
-**If only an issue was provided**, read the issue and any linked PRs:
-```bash
-gh issue view $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --json title,body,comments
-```
-
-**Categorize the impact:**
-- **New feature** --> create a new doc file in `$DOCS_PATH`
-- **Changed behavior** --> update existing docs that reference the changed component
-- **Bug fix** --> update known issues section if applicable
-- **No user-facing impact** --> tell the user: "The changes don't appear to have user-facing doc impact. Want to proceed anyway or skip?" If skipped, clean up the branch and end.
-
----
-
-## Step 5: Create or Update Docs
-
-Write documentation in the configured `$DOCS_PATH` within the docs repo.
-
-- Follow the existing documentation style in that directory (read a few existing files first to match format, tone, and structure)
-- For new features, create a new doc file
-- For changed behavior, update the relevant existing files
-- For bug fixes, update known issues or troubleshooting sections
-
----
-
-## Step 6: Create Docs PR
-
-```bash
-cd "../$(basename $DOCS_REPO)"
-# Stage only the specific files that were created or modified
-git add <specific doc files changed>
+git add <the specific files you changed>
 git commit -m "docs: update documentation for $REPO_OWNER_NAME#$ISSUE_NUMBER"
-git push -u origin "<branch-name>"
+git push -u origin "<branch>"
 gh pr create --title "docs: <description>" --body "$(cat <<'EOF'
 ## Summary
 Documentation update for $REPO_OWNER_NAME#$ISSUE_NUMBER
 
-<bullet points describing doc changes>
+<what changed in the docs, as bullets>
 
 ## Related
-- Code PR: $REPO_OWNER_NAME#$PR_NUMBER (if applicable)
-- Issue: $REPO_OWNER_NAME#$ISSUE_NUMBER (if applicable)
+- Code PR: $REPO_OWNER_NAME#$PR_NUMBER
+- Issue: $REPO_OWNER_NAME#$ISSUE_NUMBER
 EOF
 )"
 ```
 
-Capture the docs PR number and URL:
-```
-DOCS_PR_NUMBER=<number>
-DOCS_PR_URL=<url>
-```
+Record the number and URL. Inside the work skill:
+`checkpoint.py set --set docs_pr_number=<n> --set docs_pr_url=<url> --set docs_repo_path=<path>`.
 
----
+## 7. Cross-reference (work skill only)
 
-## Step 7: Cross-Reference (workflow context only)
+Back in the code repo, add a line to `CHANGELOG.md` referencing the docs PR. Standalone
+invocations skip this.
 
-**If invoked from `/co-dwerker:work` Phase 4:** Back in the code repo, update CHANGELOG.md to reference the docs PR:
-- Add a line noting the companion docs PR number
+## 8. Confirm
 
-**If invoked standalone:** Skip this step. The user can manually cross-reference if desired.
+> Docs PR created: $DOCS_PR_URL
+> Changes: <summary>
+> Related: code PR #$PR_NUMBER / issue #$ISSUE_NUMBER
 
----
-
-## Step 8: Confirmation
-
-Present the result:
-
-> "Docs PR created: $DOCS_PR_URL
->
-> Changes: <summary of doc updates>
->
-> Related: Code PR $REPO_OWNER_NAME#$PR_NUMBER / Issue #$ISSUE_NUMBER"
-
-If invoked from the work workflow, the calling Phase 4 will handle the gate for user approval before proceeding.
-
-If invoked standalone, the command is complete.
+Inside the work skill, Phase 4 treats this confirmation as its gate. Standalone, you are done.

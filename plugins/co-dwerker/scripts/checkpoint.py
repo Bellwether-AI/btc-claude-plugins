@@ -36,12 +36,26 @@ STATE_FILE_DEFAULT = ".co-dwerker.state.json"
 PHASES: dict[str, list[str]] = {
     "0a": ["mode"],
     "0b": ["project", "fields"],
-    "1": ["fetch", "report", "recommend", "gate"],
+    "1": ["fetch", "report", "recommend"],
     "2": ["load", "brainstorm", "board", "discovered"],
     "3": ["1", "1b", "2", "3", "4", "5", "5a", "6", "7", "8"],
     "4": ["docs"],
     "5": ["merge", "ci", "docs-merge", "close-issue", "board", "cleanup"],
     "6": ["progress", "queue"],
+}
+
+# Session-level context keys (not per-issue); they survive start-issue and finish-issue.
+SESSION_KEYS = {
+    "work_mode",
+    "planned_issues",
+    "project_number",
+    "project_title",
+    "project_id",
+    "status_field_id",
+    "status_options",
+    "priority_field_id",
+    "priority_options",
+    "local_app_pids",
 }
 
 
@@ -160,7 +174,7 @@ def cmd_start_issue(args: argparse.Namespace) -> int:
         }
     )
     # Per-issue context resets; session-wide keys survive.
-    session_keys = {"planned_issues", "work_mode", "project_number", "project_id", "local_app_pids"}
+    session_keys = SESSION_KEYS
     prog["context"] = {k: v for k, v in prog["context"].items() if k in session_keys}
     _apply_context(prog, args.set or [], args.append or [], [])
     _save(args.state_file, data)
@@ -261,8 +275,7 @@ def cmd_finish_issue(args: argparse.Namespace) -> int:
         {"issue": None, "phase": "6", "step": None, "status": "completed", "updated_at": _now()}
     )
     prog["completed_steps"] = []
-    keep = {"planned_issues", "work_mode", "project_number", "project_id", "local_app_pids"}
-    prog["context"] = {k: v for k, v in prog["context"].items() if k in keep}
+    prog["context"] = {k: v for k, v in prog["context"].items() if k in SESSION_KEYS}
     _save(args.state_file, data)
     print(f"checkpoint: issue #{issue} recorded as completed; progress cleared")
     return 0
