@@ -47,6 +47,47 @@ Both scripts read the PFX password from the `PFX_PWD` environment variable, exit
 - The "one step at a time" rule is binding on the AI executor — a future Claude that decides to write a loop "because the operator approved the plan and this is just 20 iterations of a verified pattern" will be violating the skill's invariants. Hard-rule language is present but not externally enforced.
 - `check_pfx.ps1` smoke-tested on macOS PowerShell 7; Windows native PowerShell 5.1/7 are expected to work but not yet validated on hardware.
 
+## co-dwerker v0.3.5
+
+### What's New
+
+**Local app verification is now actually enforced.** In v0.3.4 the post-implementation Step 5a ("Local App Testing") had soft-skip language: if it couldn't detect a runnable app, if a port was busy, or if env vars were missing, it would silently move on and the agent could open a PR without ever booting the application. v0.3.5 makes Step 5a a real phase gate — the only ways past it are a clean local boot+diff, an explicit user-confirmed skip with a recorded reason, or a one-time "this repo has no runnable app" decision that gets cached for future sessions.
+
+The step is renamed to **Local App Verification** to make the intent clear.
+
+**Auto-remediation first, then ask.** When a blocker shows up (port conflict, missing env var, missing tool), the agent tries safe local fixes before interrupting you: it kills stale processes it itself spawned earlier in the session, sources `.env.example` / `local.settings.json.example` values when they're obviously safe defaults (literal `"changeme"`, empty strings, framework dev-defaults), and prefers `.env.local` / `local.settings.json` files already on disk over template defaults. Variables whose names suggest real credentials (`*_SECRET`, `*_KEY`, `*_TOKEN`, `*_PASSWORD`) are never auto-populated — the agent escalates instead. Missing tools (`func`, `dotnet`, `node`) are never auto-installed; the agent escalates with the install command from your `CLAUDE.md`.
+
+**When the agent has to ask, you get three clear options.** "Fix it and retry" (pause-and-resume), "Skip with a documented reason" (your one-line reason gets recorded in the PR's test plan so reviewers see exactly what was skipped and why), or "Cancel the session" (exit cleanly to fix outside the workflow).
+
+**New warnings block by default, but you can dismiss them.** Previously new warnings were informational-only. They now block, but with a per-warning prompt: "Treat as regression / Dismiss for this PR with a reason / Dismiss permanently for this repo." Permanent dismissals get appended to `.co-dwerker.json` so the same warning won't ask again. Identical warnings that repeated N times during the idle window are grouped into one prompt with an `× N` count.
+
+**Step 5a idle watch is now 90 seconds** (was 30s), matching the Step 1b baseline exactly so the diff is symmetric.
+
+**No-app-detected is now surfaced**, not silently skipped. The first time you run `/co-dwerker:work` in a library/CLI repo, you'll get a one-time prompt: "no runnable app" (cached), "provide a custom run command" (cached), or "use a command just this once" (not cached). Future sessions skip the prompt.
+
+### Behavior Changes
+
+- Phase 3 Step 5a is now phase-gating. The Step Tracking GATE enforcement in `commands/work.md` blocks Step 6 (Changelog) until Step 5a reaches one of three valid completion states.
+- A new reference file `plugins/co-dwerker/references/local-app-verification.md` owns the post-impl verification logic (parallel to v0.3.4's `references/baseline-localapp.md` for pre-impl).
+- New `.co-dwerker.json` keys: `local_app_command` (custom command), `local_app_skip` (no-app flag), `dismissed_warnings` (array). `commands/exit.md` preserves these on session-end merge.
+- New `.co-dwerker.state.json` `last_session` keys: `local_app_pids` (for stale-process recognition), `local_app_skip_reason` (one-line skip reason).
+- PR descriptions created by Step 7 now include a "Local app verification" line in the test plan when relevant (skipped with reason, passed with dismissed warnings, or N/A because the repo has no runnable app).
+- The frontmatter `description:` of `/co-dwerker:work` now advertises the enforced verification phase so triggering accounts for the possibility that the workflow pauses to ask about env/port/tool blockers.
+
+### Known Issues
+
+- The auto-remediation port-conflict pass only kills PIDs co-dwerker itself recorded in `local_app_pids` during the current session. If you ran a stray `func start` or `uvicorn` in another terminal that's holding the port, the agent will surface it rather than guess.
+- The credential-name allowlist for env-var auto-sourcing is heuristic (`*_SECRET` / `*_KEY` / `*_TOKEN` / `*_PASSWORD` / `*_CONNECTION_STRING`). Names outside this pattern that happen to be credentials may be auto-sourced from templates. Verify your `.env.example` doesn't contain real values you wouldn't want copied into a local `.env`.
+- Per-warning dismissal can be tedious if your run produces dozens of distinct new warnings. The grouping-by-normalized-form helps, but a session with high warning churn will see many prompts. Consider dismissing common known-noise warnings permanently early so they stop showing up.
+- The 15-minute cumulative cap is shared across all detected apps in the verification run. Slow-booting `.NET` cold-MSBuild stacks may eat into the cap.
+
+### Upgrade Notes
+
+- No migration required. Existing `.co-dwerker.json` and `.co-dwerker.state.json` files continue to work; the new keys are added as they become relevant.
+- Repos that previously silently skipped Step 5a (no runnable app) will get the one-time no-app-detected prompt on the next `/co-dwerker:work` run. Picking "No runnable app" caches the decision permanently.
+
+---
+
 ## co-dwerker v0.3.4
 
 ### What's New

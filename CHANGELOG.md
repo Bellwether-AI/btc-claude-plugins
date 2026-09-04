@@ -29,6 +29,25 @@ All notable changes to the btc-claude-plugins repository.
 ### Notes
 - Skill went through a 3-reviewer cycle (design / discoverability, technical correctness, operational safety) with all critical and high-severity findings addressed before initial release. Notable issues caught and fixed during review: GNU-only csplit flags in the chain-check script (would have silently turned the entire chain check into a no-op on the operator's macOS workstation); PFX password leaking via argv into shell history; tenant-scope confirmation present as suggestion rather than gate; the "one step at a time" rule worded as persuasive prose rather than a hard guardrail.
 
+## [co-dwerker v0.3.5] - 2026-05-21
+
+### Changed
+- **Phase 3 Step 5a renamed and enforced**: "Local App Testing" is now "Local App Verification" and is an explicitly phase-gating step. The previous language ("Do NOT block on this step generally") that allowed silent bail-outs on missing env vars, port conflicts, or undetected apps has been removed. Step 5a now has exactly three valid completion states: clean diff against the Step 1b baseline, an `AskUserQuestion`-confirmed skip with a recorded reason, or a `.co-dwerker.json`-cached "no runnable app" decision.
+- **Step 5a idle watch extended from 30s to 90s**: matches `references/baseline-localapp.md` exactly, so the diff between Step 1b baseline and Step 5a verification compares apples to apples. The agentic flow tolerates the extra wall-clock time.
+- **Step Tracking section** in `commands/work.md` now calls out Step 5a as phase-gating with an explicit rule that Step 6 (Changelog) cannot start while Step 5a is `in_progress`.
+- **Step 7 (Create PR)** now reads `local_app_skip_reason` and the in-memory per-PR dismissed-warning reasons from Step 5a and embeds them in the PR description's test plan so reviewers see what was skipped or dismissed and why.
+- **Skill frontmatter description** updated to advertise the enforced verification phase so the LLM agent's triggering accounts for the new user-gate behavior.
+
+### Added
+- **`plugins/co-dwerker/references/local-app-verification.md`**: NEW reference file (parallel to `references/baseline-localapp.md` but for post-implementation verification). Contains: detection-cascade reuse, auto-remediation pre-flight (stale-PID port-conflict resolution scoped to co-dwerker-spawned PIDs, env-var sourcing from `.env.example` / `local.settings.json.example` templates with credential-name safeguards, missing-tool escalation without auto-install, stale-build-artifact cleanup), boot/idle/log capture (mirrors baseline exactly), blocker gate via `AskUserQuestion` with three standardized options (fix-and-retry / skip-with-reason / cancel), no-app-detected gate that writes a cached decision to `.co-dwerker.json`, baseline diff rules including the new per-warning dismissal flow, schema for the new state and config fields, PR-description integration rules, edge cases.
+- **Per-warning dismissal flow**: New warnings now block by default but can be dismissed per-PR (recorded in PR test plan) or dismissed permanently for the repo (appended to `.co-dwerker.json`'s `dismissed_warnings: []` array and filtered from future baseline+verification diffs). Identical normalized warnings are grouped into a single prompt with an `× N` count rather than asking the user N times.
+- **`.co-dwerker.json` schema additions**: `local_app_command` (custom run command from no-app-detected gate option 2), `local_app_skip` (boolean from no-app-detected gate option 1), `dismissed_warnings` (string array of normalized warnings the user permanently dismissed). `commands/exit.md` updated to preserve these on session-end merge rather than overwriting.
+- **`.co-dwerker.state.json last_session` additions**: `local_app_pids` (array of PIDs spawned during Step 1b and Step 5a so the next remediation pass can recognize stale processes co-dwerker itself owns; processes owned externally are never killed), `local_app_skip_reason` (one-line user reason from the blocker-gate skip option). `commands/exit.md` updated to persist these fields.
+
+### Why
+- The previous Step 5a was effectively opt-out — silent skip on no-detect, missing env, or port conflict. The user reported that this defeated the purpose of the automated agentic testing phase, where the agent should exhaust every locally available means of validating its work before opening a PR. v0.3.5 makes the step opt-out only when the user explicitly opts out (and the reason is recorded for the PR reviewer).
+- The 30s idle watch in old Step 5a was inconsistent with the 90s in Step 1b, breaking the diff symmetry. Same-window observation matters: a slow-firing background timer caught in the baseline at second 70 would never reappear in a 30s post-impl window, falsely showing as "resolved".
+
 ## [co-dwerker v0.3.4] - 2026-05-15
 
 ### Added
