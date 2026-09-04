@@ -298,7 +298,8 @@ def _git(args: list[str], cwd: str) -> str:
 def ensure_git_exclude(repo_root: str, patterns: list[str]) -> None:
     """Add patterns to the clone-local exclude file so intermediate commits never pick them up.
 
-    Uses ``git rev-parse --git-path`` so linked worktrees resolve to their own info/exclude.
+    Uses ``git rev-parse --git-path``, which resolves to the clone's shared info/exclude
+    from the main checkout and from any linked worktree alike.
     """
     exclude_path = _git(["rev-parse", "--git-path", "info/exclude"], repo_root)
     if not exclude_path:
@@ -744,6 +745,7 @@ def print_summary(app: dict[str, Any], out_rel: str) -> None:
         if app["exit_code"] is not None:
             extra += f", exit code {app['exit_code']}"
         print(f"  boot_status: {status}{extra}")
+        print(f"  pid: {app['pid']}")
         for p in app["http_probes"]:
             code = p.get("status_code")
             shown = code if code is not None else f"no response ({p.get('error', '')})"

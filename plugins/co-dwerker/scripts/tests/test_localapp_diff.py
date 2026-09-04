@@ -195,3 +195,91 @@ def test_text_report_lists_normalized_for_new_warnings(tmp_path, capsys):
     assert "NEW WARNINGS (1 unique)" in out
     assert "normalized: WARN thing <hex>" in out
     assert out.strip().endswith("RESULT: needs_decision")
+
+
+def test_missing_current_file_is_usage_error_4(tmp_path, capsys):
+    code = diff.main(
+        ["diff", "--current", str(tmp_path / "nope.json"), "--config", str(tmp_path / "c.json")]
+    )
+    assert code == 4
+    assert "not found" in capsys.readouterr().err
+
+
+def test_local_app_skip_wins_even_without_verify_file(tmp_path):
+    cfg = tmp_path / ".co-dwerker.json"
+    cfg.write_text(json.dumps({"local_app_skip": True}))
+    code = diff.main(["diff", "--current", str(tmp_path / "nope.json"), "--config", str(cfg)])
+    assert code == 0
+
+
+def test_dismissed_for_pr_from_state_file_makes_rerun_clean(tmp_path):
+    base = _write(tmp_path, "base.json", [_app("web", "started")])
+    cur = _write(
+        tmp_path,
+        "cur.json",
+        [
+            _app(
+                "web",
+                "started",
+                warnings=[
+                    _entry(
+                        "WARN cache pool exhausted (pid=1)", "WARN cache pool exhausted (pid=<pid>)"
+                    )
+                ],
+            )
+        ],
+    )
+    state = tmp_path / ".co-dwerker.state.json"
+    cfg = str(tmp_path / "nope.json")
+    # first run: decision needed
+    assert (
+        diff.main(
+            [
+                "diff",
+                "--baseline",
+                base,
+                "--current",
+                cur,
+                "--config",
+                cfg,
+                "--state-file",
+                str(state),
+            ]
+        )
+        == 1
+    )
+    state.write_text(
+        json.dumps(
+            {
+                "progress": {
+                    "context": {
+                        "dismissed_for_pr": [
+                            {
+                                "normalized": "WARN cache pool exhausted (pid=<pid>)",
+                                "reason": "known noisy",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+    )
+    assert (
+        diff.main(
+            [
+                "diff",
+                "--baseline",
+                base,
+                "--current",
+                cur,
+                "--config",
+                cfg,
+                "--state-file",
+                str(state),
+            ]
+        )
+        == 0
+    )
+    report = json.loads((tmp_path / ".co-dwerker.localapp-diff.json").read_text())
+    assert len(report["apps"][0]["warnings"]["dismissed_for_pr"]) == 1
+    assert report["dismissed_for_pr_applied"] == ["WARN cache pool exhausted (pid=<pid>)"]

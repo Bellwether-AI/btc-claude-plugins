@@ -1,7 +1,7 @@
 ---
 name: exit
-description: Use when the user is done for the day, wrapping up, stopping work, or ending a co-dwerker session — persists state, updates the project board, saves memories, and writes a summary so the next session can resume. Also use for "let's stop here", "save where we are", or "wind down".
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py *)
+description: Use when the user is done for the day, wrapping up, stopping work, or ending a co-dwerker session, so the next session can resume where this one stopped. Also use for "let's stop here", "save where we are", "wind down", or "we're done".
+allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py *)
 ---
 
 # Co-Dwerker: Exit
@@ -16,42 +16,40 @@ them:
 4. Project status files (`.co-dwerker.json`, `CLAUDE.md`, `project_state.md`)
 5. Episodic memory — the searchable conversation record
 
-Shared conventions, environment variables, and file schemas:
-`${CLAUDE_PLUGIN_ROOT}/references/conventions.md`. `CK="${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py"`.
+Conventions §1 (environment, running the scripts), §6 (`gh` errors), and §9 (file schemas):
+`${CLAUDE_PLUGIN_ROOT}/references/conventions.md`. `checkpoint.py …` below means
+`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py …`.
 
 ## 1. Gather the session facts
 
-Start from `$CK show`, which prints the live `progress` block (active issue, phase, step, and the
-context keys: branch, worktree, PRs, planned issues, local-app skip reasons), then fill in from
-the conversation:
+Start from `checkpoint.py show`, which prints the live `progress` block (active issue, phase, step,
+and the context keys: branch, worktree, PRs, planned issues, issues created, local-app skip
+reasons) and the previous `last_session`. Fill in from the conversation:
 
-- Issues completed, created (via `/co-dwerker:new-issue`), and still in progress
+- Issues completed, created, and still in progress
 - PRs created and merged, with URLs
 - Branches with uncommitted or unpushed work; open worktrees
 - Decisions that affect future work; blockers and follow-ups
 
 ## 2. Save the local state file
 
-Update `$STATE_FILE` (schema in conventions §9). Leave the `progress` block exactly as
-`checkpoint.py` left it; that is what Resume Check reads. Write `last_session` from the facts
-above, plus the top-level `work_mode`, `repo_owner_name`, `repo_local_path`
-(`git rev-parse --show-toplevel`), `github_project_number`, `github_project_title`, and
-`planned_issues`. Merge into the existing JSON rather than rewriting it from scratch.
-
-If `.gitignore` does not already exclude `.co-dwerker.state.json`, add it.
-
-Also write the global last-repo file so `/co-dwerker:work` can find this repo from anywhere:
-
 ```bash
-mkdir -p "$HOME/.claude"
-printf '{\n  "repo_owner_name": "%s",\n  "repo_local_path": "%s"\n}\n' "$REPO_OWNER_NAME" "$PROJECT_ROOT" > "$GLOBAL_STATE_FILE"
-rm -f "$GLOBAL_STATE_FILE_LEGACY"     # pre-v0.3.1 location
+checkpoint.py end-session --repo-owner-name $REPO_OWNER_NAME \
+  --completed <issue numbers finished today, comma-separated> \
+  --prs-created <numbers> --prs-merged <numbers>
 ```
+
+This writes `last_session` and the top-level keys from `progress` (leaving `progress` itself
+intact for Resume Check), writes the global last-repo file
+`~/.claude/co-dwerker-last-repo.json` so `/co-dwerker:work` can find this repo from anywhere,
+removes the pre-v0.3.1 global file, and appends `.co-dwerker.state.json` to `.gitignore` if it is
+missing. If it reports that it added the `.gitignore` line, include that change in the WIP commit
+offered in step 7 or tell the user it is pending.
 
 ## 3. Update the project board (project mode only)
 
 ```bash
-gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json --limit 100
+gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER" --format json --limit 100
 ```
 
 For each issue touched this session make sure the board agrees with reality: completed → Done,
@@ -74,7 +72,7 @@ type: project
 ---
 
 ## Current State (as of $TODAY)
-- **Active issue:** #<n> — <title> (Phase <p>, step <s>)
+- **Active issue:** #<n> — <title> (step <s>)
 - **Branch / worktree:** <branch> / <path or none>
 - **PRs open:** #<n> (<status>)
 - **Next up:** #<a>, #<b>
@@ -127,12 +125,6 @@ git stash list
 
 ## 8. Exit summary
 
-Concise, but complete enough that tomorrow's reader knows exactly where things stand:
-
-> **Session Summary — $TODAY** ($WORK_MODE mode on $REPO_OWNER_NAME)
->
-> **Completed:** Issue #n: title (PR #p merged)
-> **Created:** Issue #n: title (priority / status)
-> **In progress:** Issue #n: title — Phase p, step s (branch `b`); next step: …
-> **Tomorrow's starting point:** resume #n at Phase p step s, then #a, #b
-> **Open items:** blockers, pending reviews, follow-ups
+Close with a short summary that tomorrow's reader can act on without the conversation: the date
+and mode, what was completed (with PR numbers), what was created, what is in progress and at which
+step and branch, the recommended starting point for the next session, and any open items.

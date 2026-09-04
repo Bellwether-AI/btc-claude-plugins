@@ -65,7 +65,10 @@ Install separately:
 - **commit-commands** — commit
 - **episodic-memory** — search-conversations
 
-Plus `gh` (authenticated) and `python3` (3.9+, stdlib only) for the scripts.
+Plus `gh` (authenticated) and `python3` (3.9+, stdlib only). The skills run the scripts as
+`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/<name>.py`, which each skill pre-approves via `allowed-tools`.
+The capture script starts your app in its own process group and always stops it (TERM, then KILL)
+when the watch ends.
 
 ## Model policy
 
@@ -81,6 +84,8 @@ used. Cost is managed by running at most two subagents at a time, not by lowerin
 | `.co-dwerker.json` | repo root, committed | `docs_repo`, `docs_path`, `local_app_command`, `local_app_skip`, `dismissed_warnings` |
 | `.co-dwerker.state.json` | repo root, gitignored | live `progress` checkpoints plus `last_session` summary |
 | `~/.claude/co-dwerker-last-repo.json` | home | lets `work` find the repo when launched elsewhere |
+| `.gitignore` (one line) | repo root | `exit` adds `.co-dwerker.state.json` if it is missing |
+| `.git/info/exclude` | clone-local | the capture script adds the per-issue artifact names below |
 | `.co-dwerker.baseline-tests.json` | repo root, git-excluded | pre-existing test/lint failures (per issue) |
 | `.co-dwerker.baseline-localapp.json`, `.co-dwerker.verify-localapp.json`, `.co-dwerker.localapp-diff.json`, `.co-dwerker.localapp-*.log` | repo root, git-excluded | local-app captures and diff (per issue) |
 
@@ -116,6 +121,7 @@ Created on first run if missing: `P0-Critical` (#B60205), `P1-High` (#D93F0B), `
 cd plugins/co-dwerker
 uvx ruff check scripts && uvx black --check scripts
 uvx --from pytest pytest
+git ls-files -s scripts/*.py        # every script must be mode 100755
 ```
 
 ## Installation

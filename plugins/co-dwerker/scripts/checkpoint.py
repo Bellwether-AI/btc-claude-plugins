@@ -5,19 +5,28 @@ Writes a ``progress`` block into ``.co-dwerker.state.json`` so that step
 completion survives context compaction, crashes, and harnesses where no
 task/todo tool is available. Replaces the v0.3.x ``TaskCreate`` step tracking.
 
-Usage (run from the repo root, or pass --state-file):
+The state file always lives in the MAIN checkout of the repository. When run
+from a linked worktree the script resolves that location itself (via
+``git rev-parse --git-common-dir``), so the same file is updated no matter
+which worktree the session is in. Pass ``--state-file`` only to override.
 
-  checkpoint.py start-issue 42 --phase 2
+Usage (invoke as ``python3 <plugin>/scripts/checkpoint.py ...``):
+
+  checkpoint.py start-issue 42 --phase 2 --set work_mode=repo
   checkpoint.py mark 3.1 in_progress
-  checkpoint.py mark 3.1 completed --set baseline_tests=true
-  checkpoint.py set --set pr_number=57 --set pr_url=https://... --append local_app_pids=12345
+  checkpoint.py mark 3.1 completed --set baseline_tests_file=.co-dwerker.baseline-tests.json
+  checkpoint.py set --set pr_number=57 --append local_app_pids=12345
+  checkpoint.py set --top repo_owner_name=owner/repo        # top-level key, not progress.context
   checkpoint.py gate 3          # exit 0 if every phase-3 step is completed, else 1 + missing
-  checkpoint.py show            # dump the progress block
-  checkpoint.py finish-issue    # record completion and clear the live progress block
+  checkpoint.py show            # progress block + last_session summary
+  checkpoint.py finish-issue    # record completion and clear the per-issue progress
+  checkpoint.py end-session --repo-owner-name owner/repo --prs-created 57 --prs-merged 57
 
 Step ids are ``<phase>.<step>`` and mirror the headings in skills/work/SKILL.md.
-Unknown step ids are accepted (with a warning) so SKILL.md edits never break the
+Unknown step ids are accepted (with a note) so SKILL.md edits never break the
 script; ``gate`` only checks the steps it knows about for that phase.
+
+Exit codes: 0 ok · 1 gate blocked · 2 usage or state-file error
 """
 
 from __future__ import annotations
@@ -30,7 +39,9 @@ import subprocess
 import sys
 from typing import Any
 
-STATE_FILE_DEFAULT = ".co-dwerker.state.json"
+STATE_FILE_NAME = ".co-dwerker.state.json"
+GLOBAL_STATE_FILE = os.path.join(os.path.expanduser("~"), ".claude", "co-dwerker-last-repo.json")
+GLOBAL_STATE_FILE_LEGACY = os.path.join(os.path.expanduser("~"), ".co-dwerker-last-repo.json")
 
 # Phase -> ordered step ids. Keep in sync with skills/work/SKILL.md headings.
 PHASES: dict[str, list[str]] = {
@@ -47,7 +58,10 @@ PHASES: dict[str, list[str]] = {
 # Session-level context keys (not per-issue); they survive start-issue and finish-issue.
 SESSION_KEYS = {
     "work_mode",
+    "main_checkout",
     "planned_issues",
+    "issues_created",
+    "labels_verified",
     "project_number",
     "project_title",
     "project_id",
@@ -59,8 +73,49 @@ SESSION_KEYS = {
 }
 
 
+class CheckpointError(Exception):
+    """Usage or state-file problem; reported on stderr with exit code 2."""
+
+
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _today() -> str:
+    return _dt.date.today().isoformat()
+
+
+def main_checkout(start: str = ".") -> str:
+    """Absolute path of the main checkout, from the main checkout or any linked worktree."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=start,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        common = result.stdout.strip()
+        if result.returncode != 0 or not common:
+            # Older git without --path-format: fall back to plain --git-common-dir.
+            result = subprocess.run(
+                ["git", "rev-parse", "--git-common-dir"],
+                cwd=start,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            common = result.stdout.strip()
+            if result.returncode != 0 or not common:
+                return os.path.abspath(start)
+            common = os.path.abspath(os.path.join(start, common))
+        return os.path.dirname(common)
+    except OSError:
+        return os.path.abspath(start)
+
+
+def default_state_file() -> str:
+    return os.path.join(main_checkout(), STATE_FILE_NAME)
 
 
 def _load(path: str) -> dict[str, Any]:
@@ -73,9 +128,11 @@ def _load(path: str) -> dict[str, Any]:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        sys.exit(f"checkpoint: {path} is not valid JSON ({exc}); refusing to overwrite it")
+        raise CheckpointError(
+            f"{path} is not valid JSON ({exc}); refusing to overwrite it"
+        ) from exc
     if not isinstance(data, dict):
-        sys.exit(f"checkpoint: {path} must contain a JSON object")
+        raise CheckpointError(f"{path} must contain a JSON object")
     return data
 
 
@@ -91,16 +148,16 @@ def _warn_if_tracked(path: str) -> None:
     """The state file is per-clone; warn if git would commit it."""
     try:
         result = subprocess.run(
-            ["git", "check-ignore", "-q", path],
+            ["git", "-C", os.path.dirname(path) or ".", "check-ignore", "-q", path],
             capture_output=True,
             check=False,
         )
-    except (OSError, FileNotFoundError):
+    except OSError:
         return
     if result.returncode == 1:  # 1 == not ignored
         print(
-            f"checkpoint: WARNING {path} is not gitignored. Add it to .gitignore "
-            "before committing.",
+            f"checkpoint: WARNING {os.path.basename(path)} is not gitignored. Add it to "
+            ".gitignore before committing.",
             file=sys.stderr,
         )
 
@@ -115,7 +172,7 @@ def _parse_value(text: str) -> Any:
 
 def _split_kv(item: str) -> tuple[str, Any]:
     if "=" not in item:
-        sys.exit(f"checkpoint: expected key=value, got {item!r}")
+        raise CheckpointError(f"expected key=value, got {item!r}")
     key, value = item.split("=", 1)
     return key.strip(), _parse_value(value)
 
@@ -150,13 +207,25 @@ def _apply_context(
             if value not in current:
                 current.append(value)
         else:
-            sys.exit(f"checkpoint: cannot append to non-list context key {key!r}")
+            raise CheckpointError(f"cannot append to non-list context key {key!r}")
     for key in clears:
         ctx.pop(key, None)
 
 
+def _apply_top(data: dict[str, Any], tops: list[str]) -> None:
+    for item in tops:
+        key, value = _split_kv(item)
+        if key == "progress":
+            raise CheckpointError("use mark/set to change progress, not --top")
+        data[key] = value
+
+
 def _phase_of(step_id: str) -> str:
     return step_id.split(".", 1)[0]
+
+
+def _keep_session_context(prog: dict[str, Any]) -> None:
+    prog["context"] = {k: v for k, v in prog["context"].items() if k in SESSION_KEYS}
 
 
 def cmd_start_issue(args: argparse.Namespace) -> int:
@@ -173,9 +242,8 @@ def cmd_start_issue(args: argparse.Namespace) -> int:
             "completed_steps": [],
         }
     )
-    # Per-issue context resets; session-wide keys survive.
-    session_keys = SESSION_KEYS
-    prog["context"] = {k: v for k, v in prog["context"].items() if k in session_keys}
+    _keep_session_context(prog)
+    prog["context"].setdefault("main_checkout", os.path.dirname(os.path.abspath(args.state_file)))
     _apply_context(prog, args.set or [], args.append or [], [])
     _save(args.state_file, data)
     _warn_if_tracked(args.state_file)
@@ -200,7 +268,7 @@ def cmd_mark(args: argparse.Namespace) -> int:
     if args.status == "completed" and args.step_id not in prog["completed_steps"]:
         prog["completed_steps"].append(args.step_id)
     if args.status == "in_progress" and args.step_id in prog["completed_steps"]:
-        # Re-running a step (e.g. Step 5a after a fix) reopens it.
+        # Re-running a step (e.g. Step 3.5a after a fix) reopens it.
         prog["completed_steps"].remove(args.step_id)
     _apply_context(prog, args.set or [], args.append or [], args.clear or [])
     _save(args.state_file, data)
@@ -216,9 +284,10 @@ def cmd_set(args: argparse.Namespace) -> int:
     if args.issue is not None:
         prog["issue"] = args.issue
     _apply_context(prog, args.set or [], args.append or [], args.clear or [])
+    _apply_top(data, args.top or [])
     prog["updated_at"] = _now()
     _save(args.state_file, data)
-    print("checkpoint: context updated")
+    print("checkpoint: state updated")
     return 0
 
 
@@ -232,7 +301,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
     data = _load(args.state_file)
     prog = _progress(data)
     if args.phase not in PHASES:
-        sys.exit(f"checkpoint: unknown phase {args.phase!r}; known: {', '.join(PHASES)}")
+        raise CheckpointError(f"unknown phase {args.phase!r}; known: {', '.join(PHASES)}")
     missing = _missing(prog, args.phase)
     skipped = set(args.skip or [])
     missing = [m for m in missing if m not in skipped and m.split(".", 1)[1] not in skipped]
@@ -246,18 +315,31 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
 def cmd_show(args: argparse.Namespace) -> int:
     data = _load(args.state_file)
+    print(f"state file: {args.state_file}")
     prog = data.get("progress")
     if not prog:
-        print("checkpoint: no progress block in state file")
-        return 0
-    print(json.dumps(prog, indent=2))
-    phase = args.phase or prog.get("phase")
-    if phase in PHASES:
-        missing = _missing(prog, phase)
-        print(
-            f"\nPhase {phase}: "
-            + ("all tracked steps completed" if not missing else "missing " + ", ".join(missing))
-        )
+        print("progress: none")
+    else:
+        print("progress:")
+        print(json.dumps(prog, indent=2))
+        phase = args.phase or prog.get("phase")
+        if phase in PHASES:
+            missing = _missing(prog, phase)
+            print(
+                f"phase {phase}: "
+                + (
+                    "all tracked steps completed"
+                    if not missing
+                    else "missing " + ", ".join(missing)
+                )
+            )
+    last = data.get("last_session")
+    if isinstance(last, dict):
+        print("last_session:")
+        print(json.dumps(last, indent=2))
+    for key in ("work_mode", "repo_owner_name", "repo_local_path", "github_project_number"):
+        if key in data:
+            print(f"{key}: {data[key]}")
     return 0
 
 
@@ -275,9 +357,78 @@ def cmd_finish_issue(args: argparse.Namespace) -> int:
         {"issue": None, "phase": "6", "step": None, "status": "completed", "updated_at": _now()}
     )
     prog["completed_steps"] = []
-    prog["context"] = {k: v for k, v in prog["context"].items() if k in SESSION_KEYS}
+    _keep_session_context(prog)
     _save(args.state_file, data)
     print(f"checkpoint: issue #{issue} recorded as completed; progress cleared")
+    return 0
+
+
+def _int_list(text: str | None) -> list[int]:
+    if not text:
+        return []
+    out: list[int] = []
+    for part in text.split(","):
+        part = part.strip().lstrip("#")
+        if part:
+            out.append(int(part))
+    return out
+
+
+def cmd_end_session(args: argparse.Namespace) -> int:
+    """Write last_session + top-level keys from progress, and the global last-repo file."""
+    data = _load(args.state_file)
+    prog = _progress(data)
+    ctx = prog["context"]
+    repo_root = os.path.dirname(os.path.abspath(args.state_file))
+    completed = list(data.get("completed_this_session", []))
+    for n in _int_list(args.completed):
+        if n not in completed:
+            completed.append(n)
+    data["last_session"] = {
+        "date": args.date or _today(),
+        "completed_issues": completed,
+        "current_issue": prog.get("issue"),
+        "current_phase": prog.get("phase") if prog.get("issue") is not None else None,
+        "current_step": prog.get("step") if prog.get("issue") is not None else None,
+        "branch": ctx.get("branch"),
+        "worktree": ctx.get("worktree"),
+        "prs_created": _int_list(args.prs_created),
+        "prs_merged": _int_list(args.prs_merged),
+        "issues_created": list(ctx.get("issues_created", [])),
+        "local_app_pids": list(ctx.get("local_app_pids", [])),
+        "local_app_skip_reason": ctx.get("local_app_skip_reason"),
+    }
+    data["work_mode"] = ctx.get("work_mode", data.get("work_mode"))
+    data["repo_local_path"] = ctx.get("main_checkout", repo_root)
+    if args.repo_owner_name:
+        data["repo_owner_name"] = args.repo_owner_name
+    data["github_project_number"] = ctx.get("project_number", data.get("github_project_number"))
+    data["github_project_title"] = ctx.get("project_title", data.get("github_project_title"))
+    data["planned_issues"] = list(ctx.get("planned_issues", []))
+    data.pop("completed_this_session", None)
+    _save(args.state_file, data)
+
+    if args.repo_owner_name:
+        os.makedirs(os.path.dirname(args.global_state_file), exist_ok=True)
+        _save(
+            args.global_state_file,
+            {"repo_owner_name": args.repo_owner_name, "repo_local_path": data["repo_local_path"]},
+        )
+        try:
+            os.remove(GLOBAL_STATE_FILE_LEGACY)
+        except OSError:
+            pass
+
+    gitignore = os.path.join(repo_root, ".gitignore")
+    ignored = False
+    if os.path.exists(gitignore):
+        with open(gitignore, encoding="utf-8") as fh:
+            ignored = any(line.strip() == STATE_FILE_NAME for line in fh)
+    if not ignored:
+        with open(gitignore, "a", encoding="utf-8") as fh:
+            fh.write(f"{STATE_FILE_NAME}\n")
+        print(f"checkpoint: added {STATE_FILE_NAME} to .gitignore (uncommitted change)")
+    print(f"checkpoint: last_session written for {data['last_session']['date']}")
     return 0
 
 
@@ -286,7 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--state-file", default=STATE_FILE_DEFAULT, help=f"default: {STATE_FILE_DEFAULT}"
+        "--state-file",
+        default=None,
+        help="default: <main checkout>/.co-dwerker.state.json, resolved from any worktree",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -305,12 +458,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--clear", action="append", metavar="KEY")
     p.set_defaults(func=cmd_mark)
 
-    p = sub.add_parser("set", help="update context without changing step status")
+    p = sub.add_parser("set", help="update context (or --top keys) without changing step status")
     p.add_argument("--phase")
     p.add_argument("--issue", type=int)
-    p.add_argument("--set", action="append", metavar="KEY=VALUE")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE", help="progress.context key")
     p.add_argument("--append", action="append", metavar="KEY=VALUE")
     p.add_argument("--clear", action="append", metavar="KEY")
+    p.add_argument("--top", action="append", metavar="KEY=VALUE", help="top-level state key")
     p.set_defaults(func=cmd_set)
 
     p = sub.add_parser("gate", help="exit 0 only if every tracked step of the phase is completed")
@@ -320,18 +474,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_gate)
 
-    p = sub.add_parser("show", help="print the progress block")
+    p = sub.add_parser("show", help="print progress, last_session, and top-level keys")
     p.add_argument("--phase")
     p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("finish-issue", help="record the active issue as done and clear progress")
     p.set_defaults(func=cmd_finish_issue)
+
+    p = sub.add_parser("end-session", help="write last_session and the global last-repo file")
+    p.add_argument("--repo-owner-name", help="owner/repo; also writes the global last-repo file")
+    p.add_argument("--date", help="YYYY-MM-DD (default today)")
+    p.add_argument("--completed", help="comma-separated issue numbers completed this session")
+    p.add_argument("--prs-created", help="comma-separated PR numbers")
+    p.add_argument("--prs-merged", help="comma-separated PR numbers")
+    p.add_argument("--global-state-file", default=GLOBAL_STATE_FILE, help=argparse.SUPPRESS)
+    p.set_defaults(func=cmd_end_session)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    if args.state_file is None:
+        args.state_file = default_state_file()
+    try:
+        return args.func(args)
+    except CheckpointError as exc:
+        print(f"checkpoint: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

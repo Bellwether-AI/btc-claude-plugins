@@ -12,11 +12,15 @@ dismissed warnings from ``.co-dwerker.json``.
                         --config   .co-dwerker.json
   localapp_diff.py dismiss --normalized "<exact normalized text from the report>" [--normalized ...]
 
+Per-PR dismissals recorded by the work skill (``progress.context.dismissed_for_pr[].normalized``
+in ``.co-dwerker.state.json``, found in the main checkout from any worktree) are honored too, so a
+re-run after the user's decisions can reach exit 0.
+
 Exit codes for ``diff``:
   0  clean — nothing new, nothing blocking
   1  needs decisions — new warnings (dismiss-or-fix) or entries with no baseline to compare against
   2  block — new errors or a healthy→failing boot regression
-  4  usage error (missing current file, unreadable JSON)
+  4  usage error (missing current file, unreadable JSON) — the verify capture did not run
 
 The JSON report is also written next to the inputs as ``.co-dwerker.localapp-diff.json``.
 """
@@ -26,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from collections import OrderedDict
 from typing import Any, Optional
@@ -37,21 +42,55 @@ BASELINE_DEFAULT = ".co-dwerker.baseline-localapp.json"
 CURRENT_DEFAULT = ".co-dwerker.verify-localapp.json"
 CONFIG_DEFAULT = ".co-dwerker.json"
 REPORT_DEFAULT = ".co-dwerker.localapp-diff.json"
+STATE_FILE_NAME = ".co-dwerker.state.json"
+
+
+class UsageError(Exception):
+    """Bad or missing input; reported on stderr with exit code 4."""
 
 
 def _load_json(path: str, required: bool) -> Optional[dict[str, Any]]:
     if not os.path.exists(path):
         if required:
-            sys.exit(f"localapp_diff: {path} not found")
+            raise UsageError(f"{path} not found")
         return None
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
-        sys.exit(f"localapp_diff: cannot read {path}: {exc}")
+        raise UsageError(f"cannot read {path}: {exc}") from exc
     if not isinstance(data, dict):
-        sys.exit(f"localapp_diff: {path} must contain a JSON object")
+        raise UsageError(f"{path} must contain a JSON object")
     return data
+
+
+def default_state_file() -> str:
+    """<main checkout>/.co-dwerker.state.json, resolved from the main checkout or a worktree."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        common = result.stdout.strip()
+        if result.returncode == 0 and common:
+            return os.path.join(os.path.dirname(common), STATE_FILE_NAME)
+    except OSError:
+        pass
+    return STATE_FILE_NAME
+
+
+def per_pr_dismissals(state_path: str) -> set[str]:
+    state = _load_json(state_path, required=False) or {}
+    items = state.get("progress", {}).get("context", {}).get("dismissed_for_pr", [])
+    out: set[str] = set()
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and item.get("normalized"):
+            out.add(str(item["normalized"]))
+        elif isinstance(item, str):
+            out.add(item)
+    return out
 
 
 def _apps(doc: Optional[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -115,19 +154,24 @@ def diff_entries(
     cur_entries: list[dict[str, Any]],
     dismissed: set[str],
     has_baseline: bool,
+    dismissed_for_pr: Optional[set[str]] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     base_groups = group_entries(base_entries)
     cur_groups = group_entries(cur_entries)
+    dismissed_for_pr = dismissed_for_pr or set()
     result: dict[str, list[dict[str, Any]]] = {
         "new": [],
         "pre_existing": [],
         "resolved": [],
         "dismissed": [],
+        "dismissed_for_pr": [],
         "unbaselined": [],
     }
     for key, grp in cur_groups.items():
         if key in dismissed:
             result["dismissed"].append(grp)
+        elif key in dismissed_for_pr:
+            result["dismissed_for_pr"].append(grp)
         elif not has_baseline:
             result["unbaselined"].append(grp)
         elif key in base_groups:
@@ -143,18 +187,19 @@ def diff_entries(
 
 
 def run_diff(args: argparse.Namespace) -> int:
-    baseline_doc = _load_json(args.baseline, required=False)
-    current_doc = _load_json(args.current, required=True)
     config = _load_json(args.config, required=False) or {}
-    dismissed = {str(x) for x in config.get("dismissed_warnings", []) if isinstance(x, (str, int))}
     if config.get("local_app_skip"):
         print("localapp_diff: .co-dwerker.json has local_app_skip: true — nothing to diff")
         return 0
+    baseline_doc = _load_json(args.baseline, required=False)
+    current_doc = _load_json(args.current, required=True)
+    dismissed = {str(x) for x in config.get("dismissed_warnings", []) if isinstance(x, (str, int))}
+    for_pr = per_pr_dismissals(args.state_file or default_state_file())
 
     base_apps = _apps(baseline_doc)
     cur_apps = _apps(current_doc)
     if not cur_apps:
-        sys.exit(f"localapp_diff: {args.current} has no apps[] entries")
+        raise UsageError(f"{args.current} has no apps[] entries")
 
     report: dict[str, Any] = {
         "baseline_file": args.baseline if baseline_doc else None,
@@ -162,6 +207,7 @@ def run_diff(args: argparse.Namespace) -> int:
         "baseline_commit": (baseline_doc or {}).get("commit"),
         "current_commit": current_doc.get("commit"),
         "dismissed_warnings_applied": sorted(dismissed),
+        "dismissed_for_pr_applied": sorted(for_pr),
         "apps": [],
     }
     hard_block = False
@@ -182,6 +228,7 @@ def run_diff(args: argparse.Namespace) -> int:
             cur.get("log_warnings", []),
             dismissed,
             has_baseline,
+            for_pr,
         )
         app_block = boot["blocking"] or bool(errors["new"])
         app_decide = (
@@ -255,6 +302,10 @@ def print_report(report: dict[str, Any], report_path: str) -> None:
         print(
             f"  permanently dismissed warnings applied: {len(report['dismissed_warnings_applied'])}"
         )
+    if report.get("dismissed_for_pr_applied"):
+        print(
+            f"  dismissed-for-this-PR warnings applied: {len(report['dismissed_for_pr_applied'])}"
+        )
     for app in report["apps"]:
         b = app["boot"]
         print(f"\n  app: {app['name']} ({app['type']})")
@@ -291,7 +342,8 @@ def print_report(report: dict[str, Any], report_path: str) -> None:
             )
         print(
             f"  pre-existing (informational): {len(e['pre_existing'])} errors, "
-            f"{len(w['pre_existing'])} warnings; dismissed: {len(w['dismissed'])} warnings"
+            f"{len(w['pre_existing'])} warnings; dismissed: {len(w['dismissed'])} permanent, "
+            f"{len(w.get('dismissed_for_pr', []))} for this PR"
         )
     if report.get("apps_missing_from_current"):
         print(
@@ -303,15 +355,7 @@ def print_report(report: dict[str, Any], report_path: str) -> None:
 
 
 def run_dismiss(args: argparse.Namespace) -> int:
-    config: dict[str, Any] = {}
-    if os.path.exists(args.config):
-        try:
-            with open(args.config, encoding="utf-8") as fh:
-                config = json.load(fh)
-        except (json.JSONDecodeError, OSError) as exc:
-            sys.exit(f"localapp_diff: cannot read {args.config}: {exc}")
-        if not isinstance(config, dict):
-            sys.exit(f"localapp_diff: {args.config} must contain a JSON object")
+    config: dict[str, Any] = _load_json(args.config, required=False) or {}
     dismissed = config.get("dismissed_warnings")
     if not isinstance(dismissed, list):
         dismissed = []
@@ -344,6 +388,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--current", default=CURRENT_DEFAULT)
     p.add_argument("--config", default=CONFIG_DEFAULT)
     p.add_argument(
+        "--state-file",
+        default=None,
+        help="state file holding progress.context.dismissed_for_pr (default: main checkout's)",
+    )
+    p.add_argument(
         "--report",
         help=f"where to write the JSON report (default {REPORT_DEFAULT} beside --current)",
     )
@@ -363,7 +412,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except UsageError as exc:
+        print(f"localapp_diff: {exc}", file=sys.stderr)
+        return 4
 
 
 if __name__ == "__main__":

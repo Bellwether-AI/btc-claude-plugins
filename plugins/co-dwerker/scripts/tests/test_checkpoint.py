@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import checkpoint
 
@@ -95,13 +96,107 @@ def test_preserves_other_state_file_keys(tmp_path):
     assert data["progress"]["issue"] == 3
 
 
-def test_refuses_to_clobber_invalid_json(tmp_path):
+def test_refuses_to_clobber_invalid_json(tmp_path, capsys):
     state = tmp_path / ".co-dwerker.state.json"
     state.write_text("{not json")
-    try:
-        checkpoint.main(["--state-file", str(state), "start-issue", "3"])
-    except SystemExit as exc:
-        assert "not valid JSON" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("expected SystemExit")
+    code = checkpoint.main(["--state-file", str(state), "start-issue", "3"])
+    assert code == 2
+    assert "not valid JSON" in capsys.readouterr().err
     assert state.read_text() == "{not json"
+
+
+def test_issues_created_and_main_checkout_survive_issue_boundaries(tmp_path):
+    _run(tmp_path, "start-issue", "7", "--set", "main_checkout=/repo")
+    _run(tmp_path, "set", "--append", "issues_created=44")
+    _run(tmp_path, "finish-issue")
+    _, state = _run(tmp_path, "start-issue", "8")
+    ctx = _read(state)["progress"]["context"]
+    assert ctx["issues_created"] == [44]
+    assert ctx["main_checkout"] == "/repo"
+
+
+def test_set_top_writes_top_level_keys(tmp_path):
+    _run(tmp_path, "start-issue", "7")
+    code, state = _run(tmp_path, "set", "--top", "repo_owner_name=o/r", "--top", "work_mode=repo")
+    assert code == 0
+    data = _read(state)
+    assert data["repo_owner_name"] == "o/r" and data["work_mode"] == "repo"
+    code, _ = _run(tmp_path, "set", "--top", "progress=1")
+    assert code == 2
+
+
+def test_default_state_file_resolves_to_main_checkout_from_worktree(tmp_path, monkeypatch):
+    main = tmp_path / "main"
+    subprocess.run(["git", "init", "-q", str(main)], check=True)
+    subprocess.run(
+        ["git", "-C", str(main), "commit", "-q", "--allow-empty", "-m", "init"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", str(tmp_path / "wt"), "-b", "feat"],
+        check=True,
+    )
+    monkeypatch.chdir(tmp_path / "wt")
+    assert checkpoint.default_state_file() == str(main / ".co-dwerker.state.json")
+    checkpoint.main(["start-issue", "5"])
+    checkpoint.main(["mark", "3.3", "completed"])
+    assert (main / ".co-dwerker.state.json").exists()
+    assert not (tmp_path / "wt" / ".co-dwerker.state.json").exists()
+    monkeypatch.chdir(main)
+    prog = _read(main / ".co-dwerker.state.json")["progress"]
+    assert prog["completed_steps"] == ["3.3"]
+
+
+def test_default_state_file_outside_git_falls_back_to_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert checkpoint.default_state_file() == str(tmp_path / ".co-dwerker.state.json")
+
+
+def test_end_session_writes_last_session_and_global_file(tmp_path):
+    state = tmp_path / ".co-dwerker.state.json"
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _run(
+        tmp_path, "start-issue", "42", "--set", "work_mode=repo", "--set", "planned_issues=[42, 43]"
+    )
+    _run(tmp_path, "set", "--set", "branch=feature/42", "--append", "issues_created=50")
+    _run(tmp_path, "mark", "3.5a", "in_progress", "--set", "local_app_skip_reason=no db")
+    glob = tmp_path / "global.json"
+    code, _ = _run(
+        tmp_path,
+        "end-session",
+        "--repo-owner-name",
+        "owner/repo",
+        "--prs-created",
+        "57",
+        "--date",
+        "2026-09-04",
+        "--global-state-file",
+        str(glob),
+    )
+    assert code == 0
+    data = _read(state)
+    last = data["last_session"]
+    assert last["date"] == "2026-09-04"
+    assert last["current_issue"] == 42 and last["current_step"] == "3.5a"
+    assert last["branch"] == "feature/42"
+    assert last["prs_created"] == [57] and last["issues_created"] == [50]
+    assert last["local_app_skip_reason"] == "no db"
+    assert data["work_mode"] == "repo" and data["repo_owner_name"] == "owner/repo"
+    assert data["repo_local_path"] == str(tmp_path)
+    assert data["planned_issues"] == [42, 43]
+    assert data["progress"]["issue"] == 42  # live progress untouched for Resume Check
+    assert json.loads(glob.read_text()) == {
+        "repo_owner_name": "owner/repo",
+        "repo_local_path": str(tmp_path),
+    }
+    assert ".co-dwerker.state.json" in (tmp_path / ".gitignore").read_text()
+    # idempotent gitignore
+    _run(tmp_path, "end-session", "--global-state-file", str(glob))
+    assert (tmp_path / ".gitignore").read_text().count(".co-dwerker.state.json") == 1
+
+
+def test_show_prints_last_session(tmp_path, capsys):
+    _run(tmp_path, "start-issue", "1")
+    _run(tmp_path, "end-session", "--global-state-file", str(tmp_path / "g.json"))
+    _run(tmp_path, "show")
+    out = capsys.readouterr().out
+    assert "last_session:" in out and "progress:" in out

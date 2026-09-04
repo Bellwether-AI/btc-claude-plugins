@@ -1,6 +1,6 @@
 ---
 name: work-bellwether-project
-description: Deprecated alias for /co-dwerker:work. Kept so the old command name still resolves.
+description: Deprecated alias; use /co-dwerker:work.
 disable-model-invocation: true
 ---
 
