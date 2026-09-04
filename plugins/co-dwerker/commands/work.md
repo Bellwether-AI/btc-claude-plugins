@@ -1,5 +1,5 @@
 ---
-description: Start or resume a structured work session -- daily standup, issue triage, brainstorm, implement, review, merge, docs, and session continuity. Captures pre-existing test and local-app baselines before coding (may pause if the local app fails to boot on the unmodified branch). Use when starting work, resuming work, doing standup, picking issues, or running a full issue-to-merge development cycle.
+description: Start or resume a structured work session -- daily standup, issue triage, brainstorm, implement, review, merge, docs, and session continuity. Captures pre-existing test and local-app baselines before coding (may pause if the local app fails to boot on the unmodified branch) and enforces post-implementation local-app verification with auto-remediation and user gates before opening a PR. Use when starting work, resuming work, doing standup, picking issues, or running a full issue-to-merge development cycle.
 ---
 # Co-Dwerker: Work
 
@@ -124,6 +124,8 @@ At the start of each phase, create a task (via `TaskCreate`) for every numbered 
 **GATE enforcement:** Before presenting any GATE question to the user, check the task list. If any step in the current phase is not `completed`, go back and complete it before proceeding. Do NOT present the GATE until every step is done.
 
 This prevents step-skipping when implementation work consumes large amounts of context between reading the phase instructions and reaching the GATE.
+
+**Step 5a (Local App Verification) is explicitly phase-gating.** It is not optional and cannot be silently skipped. The only valid completions are: a clean boot+diff, an `AskUserQuestion`-confirmed skip with a recorded reason, or a `.co-dwerker.json`-cached "no runnable app" decision. Any other state means the task stays `in_progress` and Step 6 (Changelog) must not start. See `references/local-app-verification.md` for the full rule set.
 
 ---
 
@@ -558,53 +560,44 @@ If the baseline marked any suite's `failing_tests_truncated: true`, warn the use
 
 If verification fails on **new** failures, fix the issues and re-verify. Do not proceed until clean. Pre-existing failures alone do not block.
 
-### 5a. Local App Testing
+### 5a. Local App Verification
 
-After automated tests pass, attempt to run the application locally to verify it starts and responds correctly. This catches configuration errors, missing environment variables, and runtime issues that unit tests miss.
+After automated tests pass, fully boot the application(s) locally and validate runtime behavior against the Step 1b baseline. This is the last fully-local checkpoint before opening a PR — exhaust every available means of validating the work here. Non-destructive only: use local mocks / dev configs; never call production services or mutate external state.
 
-**Detection and execution order:**
+This is a **phase-gating step**. It cannot be silently skipped. The only valid completions are a clean diff against the baseline, an `AskUserQuestion`-confirmed skip with a recorded reason, or a `.co-dwerker.json`-cached "no runnable app" decision.
 
-1. **Azure Functions** -- look for `host.json` in the project root or subdirectories:
-   ```bash
-   find . -maxdepth 2 -name "host.json" | head -5
-   ```
-   If found, attempt `func start` (or the project's configured start command). Verify the function host starts without errors. Test any HTTP trigger endpoints with a simple GET/POST. Stop the host after verification.
+**Read `references/local-app-verification.md`** for the detection cascade reuse, the auto-remediation pre-flight (port conflicts on co-dwerker-owned PIDs, env var sourcing from templates, missing-tool escalation), boot/idle/log mechanics (same 90s idle watch as the baseline), the blocker gate via `AskUserQuestion`, the no-app-detected gate with `.co-dwerker.json` caching, the baseline diff rules (including per-warning dismissal for new warnings), the `local_app_pids` / `local_app_skip_reason` / `dismissed_warnings` schema additions, and the PR-description integration for skips and dismissed warnings. Follow its instructions end to end, then return here.
 
-2. **Azure App Services / Web Apps** -- look for startup indicators (`Startup.cs`, `Program.cs`, `app.py`, `manage.py`, `package.json` with a `start` script):
-   - .NET: `dotnet run` or `dotnet watch run`
-   - Python (Flask/Django/FastAPI): `python app.py` / `uvicorn` / `gunicorn` / `flask run`
-   - Node.js: `npm start` or `yarn start`
-   Verify the app starts, responds to a health check or root endpoint, then stop it.
+After the reference's instructions complete, route based on the outcome:
 
-3. **Other web apps** -- check `package.json`, `Makefile`, `docker-compose.yml` for start commands. Attempt to run and verify basic health.
+- **Clean pass** (all apps healthy, no new errors, all new warnings dismissed): surface the clean-pass summary template below and continue to Step 6.
+- **Pass with dismissed warnings** (clean boot, new warnings handled via dismiss-for-PR or dismiss-permanently): surface the dismissed-warnings template below and continue to Step 6. Step 7 must include the per-warning dismissal reasons in the PR test plan.
+- **User-acknowledged skip** (the user chose option 2 at the blocker gate and provided a reason): surface the skip template below and continue to Step 6. Step 7 must include the skip reason in the PR test plan.
+- **No runnable app** (`.co-dwerker.json` has `local_app_skip: true`, or the user just selected option 1 at the no-app-detected gate): surface the no-app template below and continue to Step 6.
+- **Blocker requiring fix** (new errors or warnings the user marked as regressions, or a healthy→boot-failure regression): fix the issues per the reference's "block" rules, then re-run Step 5a from the top. Do not advance.
+- **User-chosen cancel** (option 3 at the blocker gate): exit `/co-dwerker:work` cleanly. Do not advance to Step 6.
 
-**Guidelines:**
-- Run in a background process, wait for startup (up to 30s), test, then kill
-- Before starting, check for port conflicts (e.g., `lsof -i :7071` for Azure Functions, `lsof -i :5000` for Flask). If a port is in use, note it and skip rather than failing with a confusing error.
-- If multiple detection heuristics match (e.g., both `host.json` and `package.json` exist), prefer the more specific one (`host.json` for Azure Functions) over the generic one
-- If the app requires environment variables or secrets not available locally, note which are missing and skip rather than failing
-- If no runnable app is detected, skip this step silently
-- Report results to the user: what was tested, what worked, what failed
-- Do NOT block on this step generally — if local testing surfaces unexpected behavior but unit tests pass, note it and continue. **However**, see the baseline-diff rules below for the one case where new errors block.
+#### Surface a summary to the user
 
-**Baseline diff:** If `.co-dwerker.baseline-localapp.json` exists in the working directory (written by Step 1b), read it and diff the current run's results against the baseline using the normalization rules described in `references/baseline-localapp.md`:
+For a clean pass:
 
-- **Boot status comparison** (treat `started` and `started_no_signal` as equivalent "healthy boot"; treat `failed_to_start`, `timeout`, `crashed_during_idle`, and `preflight_failed` as equivalent "boot failure"):
-  - Baseline healthy → current healthy: proceed to log-entry diff below.
-  - Baseline healthy → current **boot failure**: **REGRESSION**, block, force fix before proceeding. Report the specific current `boot_status` and the first 3 error entries from the current snapshot.
-  - Baseline boot failure → current healthy: positive side effect, report enthusiastically.
-  - Baseline boot failure → current boot failure: report both statuses but do not block (the baseline was already failing; this work didn't change that). If the *specific* failure mode differs (e.g., baseline `timeout` → current `crashed_during_idle`), flag for user attention.
-  - Baseline `skipped` (user opted out at Step 1b gate): no comparison possible; report current state without baseline framing, treat all errors as potentially new but do not block.
+> "Local app verification clean: {app type(s)} booted healthy, 90s idle watch ran to completion, no new errors, no new warnings. Proceeding to changelog."
 
-- **Log-entry diff** — apply separately to each app's `log_errors[]` array and `log_warnings[]` array, matching on the `normalized` field of each entry within the same app `name`:
-  - **Pre-existing** (entries present in both baseline and current): report under "Pre-existing (was broken before this work)" — informational, do not block.
-  - **New errors** (entries present in current `log_errors[]` only): treat as **regressions** and fix before continuing. **These block.**
-  - **New warnings** (entries present in current `log_warnings[]` only): report under "New warnings (likely caused by this work)" but do **not** block. Warning churn is high and unactionable churn would block too often.
-  - **Resolved** (entries present in baseline only): report under "Resolved (was failing in baseline, clean now)" — positive side effect.
+For a pass with dismissed warnings:
 
-**If `.co-dwerker.baseline-localapp.json` does not exist** (Step 1b detected no app, or the workflow is running in a repo that lacked the baseline step): report all errors/warnings as potentially new, prefixed with a "no baseline available" note. Do not block.
+> "Local app verification passed with {N} dismissed warnings:
+> - "{raw warning truncated to 80 chars}" — dismissed {for this PR | permanently}{, reason: '...'}.
+> - ...
+>
+> {K} of these were dismissed permanently for this repo and will be filtered in future baselines. The PR description will include the per-PR dismissal reasons. Proceeding to changelog."
 
-If verification fails on **new errors** or a **healthy → boot failure** regression, fix the issues and re-verify Step 5a. Do not proceed until clean. Pre-existing errors and new warnings alone do not block.
+For a user-acknowledged skip:
+
+> "Local app verification skipped at your direction. Reason recorded: '{local_app_skip_reason}'. This reason will be included in the PR description's test plan so reviewers see it. Proceeding to changelog."
+
+For no runnable app:
+
+> "Local app verification skipped: this repo is marked as having no runnable application ({source: cached in `.co-dwerker.json` | just confirmed by you}). Proceeding to changelog."
 
 ### 6. Changelog
 
@@ -615,6 +608,13 @@ Update `CHANGELOG.md` and `RELEASE_NOTES.md` per the project's CLAUDE.md convent
 Commit changelog updates separately from implementation code.
 
 ### 7. Create PR
+
+Before drafting the body, read `$STATE_FILE.last_session.local_app_skip_reason` and any per-PR dismissed-warning reasons captured during Step 5a (the reference instructs Step 5a to keep these in memory for this step). Compose the Test Plan section accordingly:
+
+- **Clean Step 5a pass:** use the default checklist (no extra line).
+- **User-acknowledged Step 5a skip:** add `- [ ] Local app verification: SKIPPED — <local_app_skip_reason>`.
+- **Step 5a passed with dismiss-for-this-PR warnings:** add a `Local app verification: PASS with dismissed warnings:` block followed by one bullet per warning, formatted as `"<raw warning>" — dismissed: <reason>`.
+- **`local_app_skip: true` in `.co-dwerker.json` (no runnable app):** add `- [ ] Local app verification: N/A — repo has no runnable application`.
 
 ```bash
 gh pr create --title "<concise title>" --body "$(cat <<'EOF'
@@ -627,6 +627,7 @@ Closes #$ISSUE_NUMBER
 - [ ] All existing tests pass
 - [ ] New tests cover the changes
 - [ ] Linting passes (ruff + black)
+<conditional local-app verification line(s) per the rules above>
 
 Generated with [Claude Code](https://claude.com/claude-code)
 EOF

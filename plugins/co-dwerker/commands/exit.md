@@ -73,7 +73,9 @@ Write the state file to the project root:
     "worktree": "<worktree path or null>",
     "prs_created": [<PR numbers>],
     "prs_merged": [<PR numbers>],
-    "issues_created": [<issue numbers created this session>]
+    "issues_created": [<issue numbers created this session>],
+    "local_app_pids": [<PIDs spawned during Step 1b / Step 5a>],
+    "local_app_skip_reason": "<one-line reason or null>"
   }
 }
 ```
@@ -84,6 +86,8 @@ Notes:
 - `repo_local_path` is the absolute path to the repo on disk (from `git rev-parse --show-toplevel`). This enables `/co-dwerker:work` to navigate to the repo when launched from a different directory.
 - `github_project_number` and `github_project_title` are null when `work_mode == "repo"`
 - `issues_created` tracks issues created via `/co-dwerker:new-issue` during this session
+- `local_app_pids` is written by `/co-dwerker:work` Phase 3 Step 1b and Step 5a so the next run's port-conflict auto-remediation can recognize stale processes the agent itself spawned. Persist as-is at exit; the next session reads it and clears entries whose processes have already exited.
+- `local_app_skip_reason` is the one-line reason captured at the Step 5a blocker gate when the user chose "Skip with a documented reason". `null` (or absent) when no skip occurred. See `references/local-app-verification.md`.
 
 This file should be gitignored. If `.gitignore` doesn't already exclude it, add the entry:
 
@@ -194,14 +198,24 @@ Also state key learnings explicitly in the conversation text so they are capture
 
 ### 6. Update Project Status Files
 
-**`.co-dwerker.json`** — Create if it doesn't exist (first session), update if changed:
+**`.co-dwerker.json`** — Create if it doesn't exist (first session), update if changed. Preserve any existing keys written by `/co-dwerker:work` Phase 3 Step 5a (`local_app_command`, `local_app_skip`, `dismissed_warnings`) — read the current file first and merge rather than overwrite.
 
 ```json
 {
   "docs_repo": "<org/repo or null>",
-  "docs_path": "<path within docs repo or null>"
+  "docs_path": "<path within docs repo or null>",
+  "local_app_command": "<custom run command string, or absent>",
+  "local_app_skip": false,
+  "dismissed_warnings": [
+    "<normalized warning line>"
+  ]
 }
 ```
+
+Field notes:
+- `local_app_command` — custom local-run command provided by the user at the Step 5a no-app-detected gate; used by future Step 1b and Step 5a runs in place of framework detection.
+- `local_app_skip` — `true` when the repo is marked as having no runnable application; Step 1b and Step 5a skip cleanly in future sessions.
+- `dismissed_warnings` — array of normalized warning strings the user permanently dismissed at the Step 5a per-warning gate; future baseline/verification diffs treat these as pre-existing.
 
 If this is the first session and no docs repo is known, ask the user:
 
