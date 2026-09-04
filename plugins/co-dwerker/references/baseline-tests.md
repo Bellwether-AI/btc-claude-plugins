@@ -19,7 +19,10 @@ In this order, stopping when something is found:
    - `*.csproj` / `*.sln` → `dotnet test`
    - `*.Tests.ps1` → `Invoke-Pester`
    - `go.mod` → `go test ./...`
-3. **Nothing detected** — do not write `.co-dwerker.baseline-tests.json`. Tell the user no test commands were found (say where you looked) and continue to Step 3.1b. Step 3.5 treats a missing baseline file as "no baseline available" and holds every failure to the regression standard.
+3. **Test files without a manifest** — `test_*.py` / `*_test.py` (run `python3 -m pytest` if
+   pytest is installed, else `python3 -m unittest`), `*_test.go`, `*.spec.ts` / `*.test.js`, or a
+   README/CONTRIBUTING that names a test command. Use what the repo itself would use.
+4. **Nothing detected** — do not write `.co-dwerker.baseline-tests.json`. Tell the user no test commands were found (say where you looked) and continue to Step 3.1b. Step 3.5 treats a missing baseline file as "no baseline available" and holds every failure to the regression standard.
 
 ## Run each detected suite
 

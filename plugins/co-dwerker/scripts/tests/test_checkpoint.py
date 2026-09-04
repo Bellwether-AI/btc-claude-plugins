@@ -35,7 +35,8 @@ def test_mark_and_gate_flow(tmp_path):
     assert code == 0
     prog = _read(state)["progress"]
     assert prog["step"] == "3.8"
-    assert prog["status"] == "completed"
+    assert prog["step_status"] == "completed"
+    assert prog["status"] == "in_progress"  # issue status, not step status
 
 
 def test_gate_skip_for_inapplicable_step(tmp_path):
@@ -171,6 +172,8 @@ def test_end_session_writes_last_session_and_global_file(tmp_path):
         "2026-09-04",
         "--global-state-file",
         str(glob),
+        "--legacy-state-file",
+        str(tmp_path / "legacy.json"),
     )
     assert code == 0
     data = _read(state)
@@ -188,10 +191,9 @@ def test_end_session_writes_last_session_and_global_file(tmp_path):
         "repo_owner_name": "owner/repo",
         "repo_local_path": str(tmp_path),
     }
-    assert ".co-dwerker.state.json" in (tmp_path / ".gitignore").read_text()
-    # idempotent gitignore
-    _run(tmp_path, "end-session", "--global-state-file", str(glob))
-    assert (tmp_path / ".gitignore").read_text().count(".co-dwerker.state.json") == 1
+    assert not (tmp_path / ".gitignore").exists()  # never edits a tracked file
+    exclude = (tmp_path / ".git" / "info" / "exclude").read_text()
+    assert exclude.count(".co-dwerker.state.json") == 1
 
 
 def test_show_prints_last_session(tmp_path, capsys):
@@ -200,3 +202,70 @@ def test_show_prints_last_session(tmp_path, capsys):
     _run(tmp_path, "show")
     out = capsys.readouterr().out
     assert "last_session:" in out and "progress:" in out
+
+
+def test_status_is_issue_level_and_step_status_tracks_marks(tmp_path):
+    _run(tmp_path, "start-issue", "9")
+    _, state = _run(tmp_path, "mark", "3.1", "completed")
+    prog = _read(state)["progress"]
+    assert prog["status"] == "in_progress" and prog["step_status"] == "completed"
+    _, state = _run(tmp_path, "finish-issue")
+    prog = _read(state)["progress"]
+    assert prog["status"] == "completed" and prog["issue"] is None
+
+
+def test_state_file_is_added_to_git_exclude_not_gitignore(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _run(tmp_path, "start-issue", "1")
+    exclude = (tmp_path / ".git" / "info" / "exclude").read_text()
+    assert ".co-dwerker.state.json" in exclude
+    assert not (tmp_path / ".gitignore").exists()
+    status = subprocess.run(
+        ["git", "-C", str(tmp_path), "status", "--porcelain"], capture_output=True, text=True
+    ).stdout
+    assert ".co-dwerker.state.json" not in status
+
+
+def test_exclude_append_preserves_existing_rules_without_trailing_newline(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    exclude = tmp_path / ".git" / "info" / "exclude"
+    exclude.write_text("*.log\nnode_modules/")  # no trailing newline
+    _run(tmp_path, "start-issue", "1")
+    lines = exclude.read_text().splitlines()
+    assert "node_modules/" in lines and ".co-dwerker.state.json" in lines
+
+
+def test_step_id_without_phase_is_rejected(tmp_path, capsys):
+    _run(tmp_path, "start-issue", "1")
+    code, state = _run(tmp_path, "mark", "3", "completed")
+    assert code == 2
+    assert "<phase>.<step>" in capsys.readouterr().err
+    assert _read(state)["progress"]["completed_steps"] == []
+
+
+def test_end_session_rejects_bad_number_list(tmp_path, capsys):
+    _run(tmp_path, "start-issue", "1")
+    code, _ = _run(
+        tmp_path,
+        "end-session",
+        "--completed",
+        "57,none",
+        "--global-state-file",
+        str(tmp_path / "g.json"),
+    )
+    assert code == 2
+    assert "comma-separated list of numbers" in capsys.readouterr().err
+
+
+def test_nan_values_are_kept_as_strings(tmp_path):
+    _run(tmp_path, "start-issue", "1")
+    _, state = _run(tmp_path, "set", "--set", "weird=NaN")
+    assert _read(state)["progress"]["context"]["weird"] == "NaN"
+    json.loads(state.read_text())  # still strictly valid JSON
+
+
+def test_show_prints_completed_this_session(tmp_path, capsys):
+    _run(tmp_path, "start-issue", "1")
+    _run(tmp_path, "finish-issue")
+    _run(tmp_path, "show")
+    assert "completed_this_session: [1]" in capsys.readouterr().out

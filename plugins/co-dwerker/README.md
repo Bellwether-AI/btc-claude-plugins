@@ -82,10 +82,9 @@ used. Cost is managed by running at most two subagents at a time, not by lowerin
 | File | Where | Purpose |
 |------|-------|---------|
 | `.co-dwerker.json` | repo root, committed | `docs_repo`, `docs_path`, `local_app_command`, `local_app_skip`, `dismissed_warnings` |
-| `.co-dwerker.state.json` | repo root, gitignored | live `progress` checkpoints plus `last_session` summary |
+| `.co-dwerker.state.json` | main checkout, git-excluded | live `progress` checkpoints plus `last_session` summary |
 | `~/.claude/co-dwerker-last-repo.json` | home | lets `work` find the repo when launched elsewhere |
-| `.gitignore` (one line) | repo root | `exit` adds `.co-dwerker.state.json` if it is missing |
-| `.git/info/exclude` | clone-local | the capture script adds the per-issue artifact names below |
+| `.git/info/exclude` | clone-local | the scripts add the state file and the per-issue artifact names below; no committed file is edited |
 | `.co-dwerker.baseline-tests.json` | repo root, git-excluded | pre-existing test/lint failures (per issue) |
 | `.co-dwerker.baseline-localapp.json`, `.co-dwerker.verify-localapp.json`, `.co-dwerker.localapp-diff.json`, `.co-dwerker.localapp-*.log` | repo root, git-excluded | local-app captures and diff (per issue) |
 

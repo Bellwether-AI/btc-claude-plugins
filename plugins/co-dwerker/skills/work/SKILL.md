@@ -25,13 +25,14 @@ Two work modes, remembered per repo:
 The parts you need on every step:
 
 - **Checkpoints.** Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py …` written out in
-  full (below, `checkpoint.py …` is shorthand for that). Mark each step `in_progress` before you
-  start it and `completed` when it is done; store anything a later step needs with
-  `checkpoint.py set`. Run `checkpoint.py gate <phase>` before every user-facing GATE and go back
-  if it lists missing steps. A long autonomous phase pushes these instructions out of context; the
-  state file is what stops a step from being quietly skipped, and it is what Resume Check reads
-  after a crash or a compacted context. The script finds the main checkout's state file from any
-  worktree on its own.
+  full (below, `checkpoint.py …` is shorthand for that). Every `### x.y` heading below is a step:
+  `checkpoint.py mark x.y in_progress` when you reach it and `checkpoint.py mark x.y completed`
+  when it is done, whether or not the step's text repeats the command. Store anything a later step
+  needs with `checkpoint.py set`. Run `checkpoint.py gate <phase>` before every user-facing GATE
+  and go back if it lists missing steps. A long autonomous phase pushes these instructions out of
+  context; the state file is what stops a step from being quietly skipped, and it is what Resume
+  Check reads after a crash or a compacted context. The script finds the main checkout's state
+  file from any worktree on its own and keeps it out of `git status` via `.git/info/exclude`.
 - **Values, not shell variables.** `$NAME` in this file means "the value you determined earlier".
   Bash calls do not share state, so substitute the literal value in every command.
 - **Model.** If the session is not on the most capable model available, suggest `/model best`
@@ -60,14 +61,15 @@ assumes those are known and the CWD is the repo.
 3. **Git.** `git branch --list | head -20`, `git status --short`, `git worktree list`. Look for
    uncommitted work on a feature branch, worktrees from earlier sessions, branches named after
    issues in the state file.
-4. **Offer.** If `progress.issue` is set and `progress.status` is `in_progress`, ask: "Last session
-   (`last_session.date`, `$WORK_MODE` mode on `$REPO_OWNER_NAME`) was on issue #N at step S on
-   branch `B`." Options: **Resume at step S (Recommended)** — `cd` into `progress.context.worktree`
-   if recorded and it exists, re-read `design_doc` / `plan_doc` from context, and continue from
-   that step; **Fresh start** — go to Phase 0a and offer to clean up the orphaned branch or
-   worktree. If the recorded branch and worktree no longer exist, say so and recommend a fresh
-   start. If `progress.status` is `in_progress` but `progress.issue` is null, the last session
-   stopped during standup; start fresh without asking.
+4. **Offer.** If `progress.issue` is set (its `status` is `in_progress` until `finish-issue`;
+   `step_status` is just the last mark), ask: "Last session (`last_session.date`, `$WORK_MODE`
+   mode on `$REPO_OWNER_NAME`) was on issue #N at step S on branch `B`." Options: **Resume at
+   step S (Recommended)** — `cd` into `progress.context.worktree` if recorded and it exists,
+   re-read `design_doc` / `plan_doc` (absolute paths in context), and continue from step S, or
+   from the next step if `step_status` is `completed`; **Fresh start** — go to Phase 0a and
+   offer to clean up the orphaned branch or worktree. If the recorded branch and worktree no
+   longer exist, say so and recommend a fresh start. If `progress.issue` is null there is
+   nothing to resume; start at Phase 0a without asking.
 
 No prior state → Phase 0a.
 
@@ -77,8 +79,8 @@ If the state file already has `work_mode`, use it and say so in the standup head
 it is absent (first run, or a pre-v0.2 state file): **Repo mode** — GitHub Issues only, priority
 via P0–P3 labels; **Project mode** — a GitHub Projects board with Status and Priority fields.
 
-`checkpoint.py set --set work_mode=<repo|project> --set main_checkout=$MAIN_CHECKOUT`. Repo mode
-skips Phase 0b.
+`checkpoint.py mark 0a.mode completed --set work_mode=<repo|project> --set main_checkout=$MAIN_CHECKOUT`.
+Repo mode skips Phase 0b.
 
 ## Phase 0b: Project Select (project mode) — `0b.project`, `0b.fields`
 
@@ -95,7 +97,7 @@ skips Phase 0b.
    `${CLAUDE_PLUGIN_ROOT}/references/setup-project-board.md`. Record `project_number`,
    `project_title`, `project_id`, `status_field_id`, `status_options` (name → option id),
    `priority_field_id`, `priority_options` with `checkpoint.py set` so later phases, the pr-review
-   and new-issue skills, and the exit skill have them.
+   and new-issue skills, and the exit skill have them. Mark `0b.project` and `0b.fields` completed.
 
 ## Phase 1: Standup
 
@@ -115,7 +117,7 @@ gh issue list --repo "$REPO_OWNER_NAME" --state open --assignee @me --json numbe
 gh issue list --repo "$REPO_OWNER_NAME" --state open --json number,title,labels,milestone,assignees,createdAt --limit 50
 ```
 
-`$LAST_DATE` is `last_session.date`, or yesterday if unknown.
+`$LAST_DATE` is `last_session.date`, or yesterday if unknown. `checkpoint.py mark 1.fetch completed`.
 
 ### `1.report`
 
@@ -129,10 +131,12 @@ Present:
   then milestone due date, then oldest first; unlabelled issues last.
 - **Blockers** — "blocked" / "waiting" labels, unresolved dependency references in issue bodies.
 
+`checkpoint.py mark 1.report completed`.
+
 ### `1.recommend`
 
 Propose 2–4 issues for today with a one-line reason each (priority, dependency chain, quick win).
-Offer more than fits in a day so "what's next" is always clear.
+Offer more than fits in a day so "what's next" is always clear. `checkpoint.py mark 1.recommend completed`.
 
 ### GATE: work queue
 
@@ -159,7 +163,8 @@ Invoke `superpowers:brainstorming` and follow it completely. It explores the pro
 clarifying questions, proposes approaches, gets the design approved, and saves
 `docs/superpowers/specs/$TODAY-<topic>-design.md`. Design defects are the expensive kind, so do
 not shortcut this even for issues that look small. When it finishes:
-`checkpoint.py mark 2.brainstorm completed --set design_doc=<path>`.
+`checkpoint.py mark 2.brainstorm completed --set design_doc=<absolute path>` (absolute, because
+it is read again from inside the worktree on resume).
 
 ### `2.board` (project mode; otherwise `gate 2 --skip board`)
 
@@ -201,7 +206,7 @@ without a baseline boot the verification diff in Step 3.5a has nothing to compar
 ### `3.2` Plan
 
 Invoke `superpowers:writing-plans`; it turns the design doc into an implementation plan.
-`checkpoint.py mark 3.2 completed --set plan_doc=<path>`.
+`checkpoint.py mark 3.2 completed --set plan_doc=<absolute path>`.
 
 ### `3.3` Isolate
 
@@ -306,6 +311,7 @@ opens a PR. Its confirmation is the gate: `checkpoint.py mark 4.docs completed`,
 ```bash
 gh pr checks $PR_NUMBER --watch --fail-fast        # Bash timeout 600000; skip if the repo has no workflows
 gh pr merge $PR_NUMBER --squash                    # no --delete-branch: the branch is checked out in a worktree
+checkpoint.py mark 5.merge completed
 ```
 
 ### `5.ci`
@@ -325,6 +331,7 @@ gh run watch "$RUN_ID" --exit-status                                            
 
 If `gh workflow list` is empty the repo has no CI: `gate 5 --skip ci` and say so. If CI fails,
 tell the user immediately with the run URL; that needs attention before anything else happens.
+Otherwise `checkpoint.py mark 5.ci completed`.
 
 ### `5.docs-merge` (when `docs_pr_number` is set; otherwise `--skip docs-merge`)
 
@@ -333,7 +340,8 @@ tell the user immediately with the run URL; that needs attention before anything
 ### `5.close-issue`
 
 If the merge did not auto-close it:
-`gh issue close $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --reason completed`
+`gh issue close $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --reason completed`. Mark `5.close-issue`
+completed (and `5.docs-merge` / `5.board` when they ran).
 
 ### `5.board` (project mode; otherwise `--skip board`)
 
@@ -345,19 +353,19 @@ If the merge did not auto-close it:
   checkout, `git worktree remove "$WORKTREE_PATH"`. Then delete the branch, which the squash merge
   leaves "unmerged" in git's eyes: `git branch -D "$BRANCH_NAME"` and
   `git push origin --delete "$BRANCH_NAME"` (skip the push if the repo auto-deletes head branches).
-- Delete the per-issue artifacts in the main checkout (and in the worktree if it still exists):
+- Delete the per-issue artifacts left in the main checkout (the worktree's copies went with it):
   `.co-dwerker.baseline-tests.json`, `.co-dwerker.baseline-localapp.json`,
-  `.co-dwerker.verify-localapp.json`, `.co-dwerker.localapp-diff.json`,
   `.co-dwerker.localapp-*.log`.
 - Remove a docs-repo clone only if this session created it (`docs_repo_cloned`).
-- `checkpoint.py gate 5` (with the skips that apply), then `checkpoint.py finish-issue`.
+- `checkpoint.py mark 5.cleanup completed`, `checkpoint.py gate 5` (with the skips that apply),
+  then `checkpoint.py finish-issue`.
 
 ## Phase 6: Next
 
 ### `6.progress`
 
 Show what was completed today and the remaining queue (project mode: item list; repo mode: open
-issues with labels).
+issues with labels). Mark `6.progress` completed.
 
 ### `6.queue`
 
@@ -366,7 +374,7 @@ Queue not empty: ask "Issue #N (title) is next in the queue. Start brainstorming
 different issue**; **Wrap up** → suggest `/co-dwerker:exit`.
 
 Queue empty: say so and offer `/co-dwerker:new-issue`, picking an existing issue, or
-`/co-dwerker:exit`.
+`/co-dwerker:exit`. Mark `6.queue` completed either way.
 
 ## First-run setup
 

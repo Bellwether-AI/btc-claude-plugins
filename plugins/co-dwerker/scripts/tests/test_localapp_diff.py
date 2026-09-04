@@ -283,3 +283,170 @@ def test_dismissed_for_pr_from_state_file_makes_rerun_clean(tmp_path):
     report = json.loads((tmp_path / ".co-dwerker.localapp-diff.json").read_text())
     assert len(report["apps"][0]["warnings"]["dismissed_for_pr"]) == 1
     assert report["dismissed_for_pr_applied"] == ["WARN cache pool exhausted (pid=<pid>)"]
+
+
+def test_unbaselined_error_can_be_dismissed_for_pr_and_permanently(tmp_path):
+    cur = [_app("web", "started", errors=[_entry("ERROR:x fails", "ERROR:x fails")])]
+    base = _write(tmp_path, "base.json", [_app("web", "skipped")])
+    curf = _write(tmp_path, "cur.json", cur)
+    state = tmp_path / "state.json"
+    cfg = tmp_path / ".co-dwerker.json"
+    assert (
+        diff.main(
+            [
+                "diff",
+                "--baseline",
+                base,
+                "--current",
+                curf,
+                "--config",
+                str(cfg),
+                "--state-file",
+                str(state),
+            ]
+        )
+        == 1
+    )
+    state.write_text(
+        json.dumps(
+            {
+                "progress": {
+                    "context": {
+                        "dismissed_for_pr": [{"normalized": "ERROR:x fails", "reason": "known"}]
+                    }
+                }
+            }
+        )
+    )
+    assert (
+        diff.main(
+            [
+                "diff",
+                "--baseline",
+                base,
+                "--current",
+                curf,
+                "--config",
+                str(cfg),
+                "--state-file",
+                str(state),
+            ]
+        )
+        == 0
+    )
+    state.write_text("{}")
+    diff.main(["dismiss", "--config", str(cfg), "--normalized", "ERROR:x fails"])
+    assert (
+        diff.main(
+            [
+                "diff",
+                "--baseline",
+                base,
+                "--current",
+                curf,
+                "--config",
+                str(cfg),
+                "--state-file",
+                str(state),
+            ]
+        )
+        == 0
+    )
+
+
+def test_new_error_against_real_baseline_still_blocks_even_if_dismissed(tmp_path):
+    base = _write(tmp_path, "base.json", [_app("web", "started")])
+    curf = _write(tmp_path, "cur.json", [_app("web", "started", errors=[_entry("ERROR:new")])])
+    cfg = tmp_path / ".co-dwerker.json"
+    cfg.write_text(json.dumps({"dismissed_warnings": ["ERROR:new"]}))
+    assert (
+        diff.main(
+            [
+                "diff",
+                "--baseline",
+                base,
+                "--current",
+                curf,
+                "--config",
+                str(cfg),
+                "--state-file",
+                str(tmp_path / "none.json"),
+            ]
+        )
+        == 2
+    )
+
+
+def test_null_progress_and_non_list_dismissals_are_tolerated(tmp_path):
+    base = _write(tmp_path, "base.json", [_app("web", "started")])
+    curf = _write(tmp_path, "cur.json", [_app("web", "started", warnings=[_entry("WARN a")])])
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"progress": None}))
+    cfg = tmp_path / ".co-dwerker.json"
+    cfg.write_text(
+        json.dumps({"dismissed_warnings": "WARN a"})
+    )  # wrong type, must not dismiss chars
+    code = diff.main(
+        [
+            "diff",
+            "--baseline",
+            base,
+            "--current",
+            curf,
+            "--config",
+            str(cfg),
+            "--state-file",
+            str(state),
+        ]
+    )
+    assert code == 1
+    report = json.loads((tmp_path / ".co-dwerker.localapp-diff.json").read_text())
+    assert report["dismissed_warnings_applied"] == []
+
+
+def test_corrupt_current_file_is_usage_error_4(tmp_path, capsys):
+    curf = tmp_path / "cur.json"
+    curf.write_text("{not json")
+    assert (
+        diff.main(
+            [
+                "diff",
+                "--current",
+                str(curf),
+                "--config",
+                str(tmp_path / "c.json"),
+                "--state-file",
+                str(tmp_path / "s.json"),
+            ]
+        )
+        == 4
+    )
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_stale_app_from_earlier_issue_is_reported_not_diffed(tmp_path):
+    base = tmp_path / "base.json"
+    base.write_text(
+        json.dumps({"apps": [_app("api", "started")], "commit": "a", "issue_number": 42})
+    )
+    stale = dict(_app("web", "started", errors=[_entry("ERROR:old")]), issue_number=41)
+    fresh = dict(_app("api", "started"), issue_number=42)
+    cur = tmp_path / "cur.json"
+    cur.write_text(json.dumps({"apps": [fresh, stale], "commit": "b", "issue_number": 42}))
+    code = diff.main(
+        [
+            "diff",
+            "--baseline",
+            str(base),
+            "--current",
+            str(cur),
+            "--config",
+            str(tmp_path / "c.json"),
+            "--state-file",
+            str(tmp_path / "s.json"),
+        ]
+    )
+    assert code == 1
+    report = json.loads((tmp_path / ".co-dwerker.localapp-diff.json").read_text())
+    assert report["apps_missing_from_current"] == ["web"]
+    assert [a["name"] for a in report["apps"]] == ["api"]

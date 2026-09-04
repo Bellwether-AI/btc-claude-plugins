@@ -14,7 +14,9 @@ dismissed warnings from ``.co-dwerker.json``.
 
 Per-PR dismissals recorded by the work skill (``progress.context.dismissed_for_pr[].normalized``
 in ``.co-dwerker.state.json``, found in the main checkout from any worktree) are honored too, so a
-re-run after the user's decisions can reach exit 0.
+re-run after the user's decisions can reach exit 0. When there is no baseline for an app (the
+baseline was skipped or missing), both dismissal routes also apply to its *unbaselined* errors;
+genuinely new errors against a real baseline always block.
 
 Exit codes for ``diff``:
   0  clean — nothing new, nothing blocking
@@ -64,26 +66,45 @@ def _load_json(path: str, required: bool) -> Optional[dict[str, Any]]:
     return data
 
 
+def _write_json(path: str, data: dict[str, Any]) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+def _git(args: list[str]) -> str:
+    try:
+        result = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+    except OSError:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def default_state_file() -> str:
     """<main checkout>/.co-dwerker.state.json, resolved from the main checkout or a worktree."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        common = result.stdout.strip()
-        if result.returncode == 0 and common:
-            return os.path.join(os.path.dirname(common), STATE_FILE_NAME)
-    except OSError:
-        pass
-    return STATE_FILE_NAME
+    common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    if not common:
+        common = _git(["rev-parse", "--git-common-dir"])  # older git; may be relative
+        if not common:
+            return STATE_FILE_NAME
+        common = os.path.abspath(common)
+    return os.path.join(os.path.dirname(common), STATE_FILE_NAME)
 
 
 def per_pr_dismissals(state_path: str) -> set[str]:
-    state = _load_json(state_path, required=False) or {}
-    items = state.get("progress", {}).get("context", {}).get("dismissed_for_pr", [])
+    state = _load_json(state_path, required=False)
+    if state is None:
+        print(
+            f"localapp_diff: note — state file {state_path} not found; "
+            "no per-PR dismissals applied",
+            file=sys.stderr,
+        )
+        return set()
+    prog = state.get("progress") or {}
+    ctx = (prog.get("context") or {}) if isinstance(prog, dict) else {}
+    items = ctx.get("dismissed_for_pr") or []
     out: set[str] = set()
     for item in items if isinstance(items, list) else []:
         if isinstance(item, dict) and item.get("normalized"):
@@ -181,7 +202,7 @@ def diff_entries(
             result["new"].append(grp)
     if has_baseline:
         for key, grp in base_groups.items():
-            if key not in cur_groups and key not in dismissed:
+            if key not in cur_groups and key not in dismissed and key not in dismissed_for_pr:
                 result["resolved"].append(grp)
     return result
 
@@ -193,7 +214,12 @@ def run_diff(args: argparse.Namespace) -> int:
         return 0
     baseline_doc = _load_json(args.baseline, required=False)
     current_doc = _load_json(args.current, required=True)
-    dismissed = {str(x) for x in config.get("dismissed_warnings", []) if isinstance(x, (str, int))}
+    raw_dismissed = config.get("dismissed_warnings")
+    dismissed = {
+        str(x)
+        for x in (raw_dismissed if isinstance(raw_dismissed, list) else [])
+        if isinstance(x, (str, int))
+    }
     for_pr = per_pr_dismissals(args.state_file or default_state_file())
 
     base_apps = _apps(baseline_doc)
@@ -212,16 +238,26 @@ def run_diff(args: argparse.Namespace) -> int:
     }
     hard_block = False
     needs_decision = False
+    doc_issue = current_doc.get("issue_number")
 
     for name, cur in cur_apps.items():
+        app_issue = cur.get("issue_number")
+        if doc_issue is not None and app_issue is not None and app_issue != doc_issue:
+            # Left over from an earlier issue; this run did not verify it.
+            report.setdefault("apps_missing_from_current", []).append(name)
+            needs_decision = True
+            continue
         base = base_apps.get(name)
         has_baseline = base is not None and base.get("boot_status") != "skipped"
         boot = boot_outcome(base, cur)
         errors = diff_entries(
             (base or {}).get("log_errors", []) if has_baseline else [],
             cur.get("log_errors", []),
-            set(),  # dismissals apply to warnings only
+            (
+                dismissed if not has_baseline else set()
+            ),  # errors are dismissable only when unbaselined
             has_baseline,
+            for_pr if not has_baseline else None,
         )
         warnings = diff_entries(
             (base or {}).get("log_warnings", []) if has_baseline else [],
@@ -266,9 +302,7 @@ def run_diff(args: argparse.Namespace) -> int:
     report_path = args.report or os.path.join(
         os.path.dirname(os.path.abspath(args.current)), REPORT_DEFAULT
     )
-    with open(report_path, "w", encoding="utf-8") as fh:
-        json.dump(report, fh, indent=2)
-        fh.write("\n")
+    _write_json(report_path, report)
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -314,7 +348,7 @@ def print_report(report: dict[str, Any], report_path: str) -> None:
             print(f"        {b['note']}")
         e, w = app["errors"], app["warnings"]
         if e["new"]:
-            print(f"  NEW ERRORS ({len(e['new'])} unique) — BLOCK, fix and re-run Step 5a:")
+            print(f"  NEW ERRORS ({len(e['new'])} unique) — BLOCK, fix and re-run Step 3.5a:")
             for grp in e["new"]:
                 print("\n".join(_fmt_group(grp, show_normalized=False)))
         if w["new"]:
@@ -329,10 +363,11 @@ def print_report(report: dict[str, Any], report_path: str) -> None:
         if e["unbaselined"] or w["unbaselined"]:
             print(
                 f"  UNBASELINED entries (no baseline to compare): {len(e['unbaselined'])} errors, "
-                f"{len(w['unbaselined'])} warnings — decide per entry"
+                f"{len(w['unbaselined'])} warnings — decide per entry (same three options; "
+                "the normalized text is what a dismissal matches)"
             )
             for grp in e["unbaselined"]:
-                print("\n".join(_fmt_group(grp, show_normalized=False)))
+                print("\n".join(_fmt_group(grp, show_normalized=True)))
             for grp in w["unbaselined"]:
                 print("\n".join(_fmt_group(grp, show_normalized=True)))
         if e["resolved"] or w["resolved"]:
@@ -342,12 +377,13 @@ def print_report(report: dict[str, Any], report_path: str) -> None:
             )
         print(
             f"  pre-existing (informational): {len(e['pre_existing'])} errors, "
-            f"{len(w['pre_existing'])} warnings; dismissed: {len(w['dismissed'])} permanent, "
-            f"{len(w.get('dismissed_for_pr', []))} for this PR"
+            f"{len(w['pre_existing'])} warnings; dismissed: "
+            f"{len(w['dismissed']) + len(e['dismissed'])} permanent, "
+            f"{len(w['dismissed_for_pr']) + len(e['dismissed_for_pr'])} for this PR"
         )
     if report.get("apps_missing_from_current"):
         print(
-            "\n  apps in baseline but not verified now: "
+            "\n  apps in baseline (or left over from an earlier issue) but not verified now: "
             + ", ".join(report["apps_missing_from_current"])
         )
     print(f"\n  report: {report_path}")
@@ -365,11 +401,7 @@ def run_dismiss(args: argparse.Namespace) -> int:
             dismissed.append(text)
             added += 1
     config["dismissed_warnings"] = dismissed
-    tmp = args.config + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(config, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, args.config)
+    _write_json(args.config, config)
     print(
         f"localapp_diff: {added} warning(s) added to dismissed_warnings in {args.config} "
         f"({len(dismissed)} total)"
@@ -416,6 +448,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return args.func(args)
     except UsageError as exc:
         print(f"localapp_diff: {exc}", file=sys.stderr)
+        return 4
+    except Exception as exc:  # noqa: BLE001 - never let a crash masquerade as a verdict
+        print(f"localapp_diff: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 4
 
 

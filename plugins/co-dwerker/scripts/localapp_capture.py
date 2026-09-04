@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Boot a local app, watch it, and record errors/warnings as JSON.
 
-Used by co-dwerker for both the pre-implementation baseline (Phase 3 Step 1b)
-and the post-implementation verification run (Phase 3 Step 5a). Running the
-same script for both guarantees the two captures are normalized identically,
-which is what makes the later diff meaningful.
+Used by co-dwerker for both the pre-implementation baseline (Step 3.1b) and the
+post-implementation verification run (Step 3.5a). Running the same script for
+both guarantees the two captures are normalized identically, which is what
+makes the later diff meaningful.
 
 Typical calls (from the repo root):
 
@@ -15,17 +15,18 @@ Typical calls (from the repo root):
       --write-skipped          # user opted out at the baseline gate; records boot_status "skipped"
 
 What it does, in order:
-  1. Pre-flight: are the ports free? are required config files present?
+  1. Pre-flight: are the ports free (IPv4 and IPv6)? are required config files present?
   2. Start the command in its own process group, tee stdout+stderr to a log file.
   3. Boot detection: framework ready-signal regex, then an HTTP probe as fallback/confirmation.
   4. Idle watch (default 90 s) so slow background timers and lazy init get a chance to fail.
-  5. Clean shutdown: SIGTERM, then SIGKILL after 10 s.
+  5. Clean shutdown of the whole process group: SIGTERM, then SIGKILL after 10 s, and a final
+     SIGKILL sweep so children outlive neither the launcher nor the capture.
   6. Classify every captured line as error / warning (multi-line tracebacks fold into one
      entry), normalize volatile fields, and write the JSON (merging into an existing file
      by app name so monorepos accumulate one entry per app).
 
 Exit codes: 0 healthy boot · 2 boot failure (failed_to_start / timeout / crashed_during_idle)
-            3 preflight_failed · 4 usage or environment error
+            3 preflight_failed · 4 usage error, or the capture itself failed (nothing recorded)
 """
 
 from __future__ import annotations
@@ -45,6 +46,8 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional
+
+SCHEMA_VERSION = 3  # bump whenever classification or normalization changes
 
 # --------------------------------------------------------------------------------------
 # Framework knowledge. Kept small on purpose — the agent picks the command; the script
@@ -138,20 +141,25 @@ DEFAULT_PROBE_PATHS = ["/health", "/healthz", "/"]
 # Classification and normalization
 # --------------------------------------------------------------------------------------
 
+# "error"/"errors"/"err" count only as a level word: preceded by start, space, bracket, paren
+# or pipe, and followed by punctuation, space, or end of line. This keeps "ERROR:app", "[error]",
+# "npm ERR!" and "compiled with 2 errors" while rejecting "/api/error" and "0 Error(s)".
+_LEVEL_WORD = r"(?:^|[\s\[\(|])(?:{words})(?:[:\]!\s.,;)]|$)"
 ERROR_RE = re.compile(
-    r"(\berror\b|\berr:|\[error\]|\berr\b|exception|traceback \(most recent call last\)|"
-    r"unhandled exception|\bfatal\b|\bpanic:|\[critical\]|\bcritical:|^\s*fail:|^\s*crit:)",
+    _LEVEL_WORD.format(words=r"errors?|errs?")
+    + r"|exceptions?\b|traceback \(most recent call last\)|unhandled exception"
+    r"|\bfatal\b|\bpanic:|\[critical\]|\bcritical:|^\s*fail:|^\s*crit:",
     re.IGNORECASE,
 )
 WARNING_RE = re.compile(
-    r"(\bwarn\b|\bwarning\b|\[warn\]|\[warning\]|deprecat|RuntimeWarning|DeprecationWarning|"
-    r"UserWarning|^\s*warn:)",
+    _LEVEL_WORD.format(words=r"warnings?|warn") + r"|\bdeprecat\w*|\w+Warning\b|^\s*warn:",
     re.IGNORECASE,
 )
 TRACEBACK_HEADER_RE = re.compile(r"^\s*Traceback \(most recent call last\):")
 PY_EXC_LINE_RE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Warning|Exit|Interrupt)\b")
 DOTNET_EXC_RE = re.compile(r"^\s*(Unhandled exception|System\.[\w.]*Exception\b|[\w.]+Exception:)")
 STACK_FRAME_RE = re.compile(r"^\s+at\s+\S")
+PY_FRAME_RE = re.compile(r'^\s+File "')
 DOTNET_LEVEL_RE = re.compile(r"^\s*(fail|crit|warn|info|dbug|trce):", re.IGNORECASE)
 
 _STRIP_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -199,6 +207,25 @@ def _indented(line: str) -> bool:
     return line[:1] in (" ", "\t")
 
 
+def _frame_like(line: str) -> bool:
+    return bool(STACK_FRAME_RE.match(line) or PY_FRAME_RE.match(line))
+
+
+def _block_key(block: list[tuple[float, str]]) -> str:
+    """Diff key for an entry: header line plus the final non-frame line.
+
+    Stack frames carry line numbers that shift with unrelated edits, so they are left out of
+    the key; the exception type/message at the start and end is what identifies the event.
+    """
+    first = block[0][1]
+    if len(block) == 1:
+        return normalize(first)
+    last = block[-1][1]
+    if last != first and not _frame_like(last) and normalize(last):
+        return normalize(first) + " | " + normalize(last)
+    return normalize(first)
+
+
 def classify_lines(
     lines: list[tuple[float, str]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -212,22 +239,19 @@ def classify_lines(
     n = len(lines)
     i = 0
 
-    def entry(kind: str, block: list[tuple[float, str]]) -> None:
-        raw = "\n".join(t for _, t in block)
+    def entry(kind: str, block: list[tuple[float, str]]) -> dict[str, Any]:
         rec = {
             "captured_at_offset_seconds": round(block[0][0], 1),
-            "raw": raw,
-            "normalized": (
-                normalize(block[0][1])
-                if len(block) == 1
-                else normalize(" | ".join(t for _, t in block))
-            ),
+            "raw": "\n".join(t for _, t in block),
+            "normalized": _block_key(block),
             "multiline": len(block) > 1,
         }
         if rec["multiline"]:
             rec["line_count"] = len(block)
         (errors if kind == "error" else warnings).append(rec)
+        return rec
 
+    open_frames: Optional[dict[str, Any]] = None  # error entry that may still gain "at ..." frames
     while i < n:
         off, text = lines[i]
         if TRACEBACK_HEADER_RE.match(text):
@@ -240,6 +264,7 @@ def classify_lines(
                 block.append(lines[i])
                 i += 1
             entry("error", block)
+            open_frames = None
             continue
         if DOTNET_EXC_RE.match(text):
             block = [lines[i]]
@@ -248,6 +273,7 @@ def classify_lines(
                 block.append(lines[i])
                 i += 1
             entry("error", block)
+            open_frames = None
             continue
         level = DOTNET_LEVEL_RE.match(text)
         if level and level.group(1).lower() in ("fail", "crit", "warn"):
@@ -257,23 +283,22 @@ def classify_lines(
                 block.append(lines[i])
                 i += 1
             entry("error" if level.group(1).lower() != "warn" else "warning", block)
+            open_frames = None
             continue
-        if STACK_FRAME_RE.match(text) and errors and errors[-1].get("_open_frames"):
-            last = errors[-1]
-            last["raw"] += "\n" + text
-            last["multiline"] = True
-            last["line_count"] = last.get("line_count", 1) + 1
+        if STACK_FRAME_RE.match(text) and open_frames is not None:
+            open_frames["raw"] += "\n" + text
+            open_frames["multiline"] = True
+            open_frames["line_count"] = open_frames.get("line_count", 1) + 1
             i += 1
             continue
         kind = classify_line(text)
         if kind:
-            entry(kind, [lines[i]])
-            if kind == "error" and ("exception" in text.lower()):
-                errors[-1]["_open_frames"] = True
+            rec = entry(kind, [lines[i]])
+            open_frames = rec if (kind == "error" and "exception" in text.lower()) else None
+        elif text.strip():
+            open_frames = None
         i += 1
 
-    for rec in errors:
-        rec.pop("_open_frames", None)
     return errors, warnings
 
 
@@ -282,40 +307,53 @@ def classify_lines(
 # --------------------------------------------------------------------------------------
 
 
+class UsageError(Exception):
+    """Bad arguments or a capture that could not run; exit code 4."""
+
+
 def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _git(args: list[str], cwd: str) -> str:
     try:
-        return subprocess.run(
+        result = subprocess.run(
             ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
-        ).stdout.strip()
+        )
     except OSError:
         return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def ensure_git_exclude(repo_root: str, patterns: list[str]) -> None:
     """Add patterns to the clone-local exclude file so intermediate commits never pick them up.
 
     Uses ``git rev-parse --git-path``, which resolves to the clone's shared info/exclude
-    from the main checkout and from any linked worktree alike.
+    from the main checkout and from any linked worktree alike. Housekeeping only: any
+    failure is reported, never fatal.
     """
     exclude_path = _git(["rev-parse", "--git-path", "info/exclude"], repo_root)
     if not exclude_path:
         return
     if not os.path.isabs(exclude_path):
         exclude_path = os.path.join(repo_root, exclude_path)
-    os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
-    existing: set[str] = set()
-    if os.path.exists(exclude_path):
-        with open(exclude_path, encoding="utf-8") as fh:
-            existing = {ln.strip() for ln in fh}
-    missing = [p for p in patterns if p not in existing]
-    if missing:
+    try:
+        existing_text = ""
+        if os.path.exists(exclude_path):
+            with open(exclude_path, encoding="utf-8") as fh:
+                existing_text = fh.read()
+        existing = {ln.strip() for ln in existing_text.splitlines()}
+        missing = [p for p in patterns if p not in existing]
+        if not missing:
+            return
+        os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
         with open(exclude_path, "a", encoding="utf-8") as fh:
+            if existing_text and not existing_text.endswith("\n"):
+                fh.write("\n")
             for p in missing:
                 fh.write(p + "\n")
+    except OSError as exc:
+        print(f"localapp_capture: note — could not update {exclude_path}: {exc}", file=sys.stderr)
 
 
 def parse_env_file(path: str) -> dict[str, str]:
@@ -336,10 +374,17 @@ def parse_env_file(path: str) -> dict[str, str]:
     return env
 
 
-def port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        return s.connect_ex((host, port)) == 0
+def port_in_use(port: int) -> bool:
+    """True if anything accepts connections on the port over IPv4 or IPv6 loopback."""
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                if s.connect_ex((host, port)) == 0:
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def port_holder(port: int) -> Optional[dict[str, Any]]:
@@ -356,7 +401,7 @@ def port_holder(port: int) -> Optional[dict[str, Any]]:
         return None
     info: dict[str, Any] = {}
     for token in out.split():
-        if token.startswith("p") and "pid" not in info:
+        if token.startswith("p") and "pid" not in info and token[1:].isdigit():
             info["pid"] = int(token[1:])
         elif token.startswith("c") and "command" not in info:
             info["command"] = token[1:]
@@ -397,13 +442,17 @@ def http_probe(port: int, path: str, timeout: float = 3.0) -> dict[str, Any]:
 PORT_IN_OUTPUT_RE = re.compile(r"https?://(?:\[[^\]]*\]|[\w.\-]+):(\d{2,5})")
 
 
+def _safe_name(name: str) -> str:
+    return re.sub(r"[^\w.-]", "_", name) or "app"
+
+
 # --------------------------------------------------------------------------------------
 # Process runner
 # --------------------------------------------------------------------------------------
 
 
 class ProcessWatcher:
-    """Runs the command and collects timestamped output lines in the background."""
+    """Runs the command in its own process group and collects timestamped output lines."""
 
     def __init__(self, command: str, cwd: str, env: dict[str, str], log_path: str) -> None:
         self.command = command
@@ -414,6 +463,8 @@ class ProcessWatcher:
         self._lock = threading.Lock()
         self._start = time.monotonic()
         self.proc: Optional[subprocess.Popen[str]] = None
+        self.pgid: Optional[int] = None
+        self.reader_error: Optional[str] = None
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
@@ -435,19 +486,24 @@ class ProcessWatcher:
         self.proc = subprocess.Popen(
             self.command, **popen_kwargs
         )  # noqa: S602 - agent-chosen command
+        # start_new_session makes the child its own group leader, so the pgid is its pid.
+        self.pgid = self.proc.pid if os.name == "posix" else None
         self._thread = threading.Thread(target=self._reader, daemon=True)
         self._thread.start()
 
     def _reader(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
-        with open(self.log_path, "w", encoding="utf-8") as log:
-            for raw in self.proc.stdout:
-                text = raw.rstrip("\r\n")
-                offset = time.monotonic() - self._start
-                log.write(f"[{offset:8.2f}] {text}\n")
-                log.flush()
-                with self._lock:
-                    self.lines.append((offset, text))
+        try:
+            with open(self.log_path, "w", encoding="utf-8") as log:
+                for raw in self.proc.stdout:
+                    text = raw.rstrip("\r\n")
+                    offset = time.monotonic() - self._start
+                    log.write(f"[{offset:8.2f}] {text}\n")
+                    log.flush()
+                    with self._lock:
+                        self.lines.append((offset, text))
+        except Exception as exc:  # noqa: BLE001 - surfaced as capture_error, never silent
+            self.reader_error = f"{type(exc).__name__}: {exc}"
 
     def elapsed(self) -> float:
         return time.monotonic() - self._start
@@ -459,31 +515,44 @@ class ProcessWatcher:
     def exit_code(self) -> Optional[int]:
         return self.proc.poll() if self.proc else None
 
-    def shutdown(self, grace_seconds: float = 10.0) -> None:
-        if not self.proc or self.proc.poll() is not None:
+    def _signal_group(self, sig: int) -> None:
+        if self.pgid is None:
             return
         try:
-            if os.name == "posix":
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
-            else:  # pragma: no cover - windows
-                self.proc.terminate()
-        except (ProcessLookupError, PermissionError):
-            return
-        deadline = time.monotonic() + grace_seconds
-        while time.monotonic() < deadline:
-            if self.proc.poll() is not None:
-                break
-            time.sleep(0.2)
-        if self.proc.poll() is None:
-            try:
+            os.killpg(self.pgid, sig)
+        except OSError:  # group already gone, or not permitted
+            pass
+
+    def shutdown(self, grace_seconds: float = 10.0) -> None:
+        """Stop the whole process group, then drain the reader.
+
+        Always sweeps the group, even when the direct child has already exited: a launcher
+        (``npm start``, a wrapper script) can die and leave the real server running.
+        """
+        if self.proc is not None:
+            if self.proc.poll() is None:
                 if os.name == "posix":
-                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                    self._signal_group(signal.SIGTERM)
                 else:  # pragma: no cover - windows
-                    self.proc.kill()
-            except (ProcessLookupError, PermissionError):
+                    self.proc.terminate()
+                deadline = time.monotonic() + grace_seconds
+                while time.monotonic() < deadline and self.proc.poll() is None:
+                    time.sleep(0.2)
+            if os.name == "posix":
+                self._signal_group(signal.SIGKILL)
+            elif self.proc.poll() is None:  # pragma: no cover - windows
+                self.proc.kill()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
                 pass
         if self._thread:
             self._thread.join(timeout=5)
+        if self.proc is not None and self.proc.stdout:
+            try:
+                self.proc.stdout.close()
+            except OSError:
+                pass
 
 
 # --------------------------------------------------------------------------------------
@@ -495,18 +564,23 @@ FAILED = {"failed_to_start", "timeout", "crashed_during_idle", "preflight_failed
 
 
 def run_capture(args: argparse.Namespace) -> dict[str, Any]:
+    if args.max_seconds is None:
+        args.max_seconds = args.boot_timeout + args.idle_seconds + 30
     repo_root = os.path.abspath(args.repo_root)
     start_path = os.path.abspath(os.path.join(repo_root, args.cwd))
-    log_name = f".co-dwerker.localapp-{args.name}-{args.mode}.log"
+    log_name = f".co-dwerker.localapp-{_safe_name(args.name)}-{args.mode}.log"
     log_path = os.path.join(repo_root, log_name)
 
     app: dict[str, Any] = {
         "name": args.name,
         "type": args.type,
         "mode": args.mode,
+        "captured_at": _now_iso(),
+        "issue_number": args.issue,
         "command": args.command,
         "start_path": os.path.relpath(start_path, repo_root),
         "pid": None,
+        "pgid": None,
         "boot_status": None,
         "boot_duration_seconds": None,
         "ready_signal_detected": False,
@@ -517,6 +591,7 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
         "log_warnings": [],
         "idle_watch_seconds_observed": 0,
         "exit_code": None,
+        "terminated_by_capture": False,
         "log_file": log_name,
     }
 
@@ -531,6 +606,20 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     optional = list(args.config_check or []) + (
         OPTIONAL_CONFIG.get(args.type, []) if not args.no_default_config_checks else []
     )
+
+    # ---- validate inputs that would otherwise fail mid-capture -------------------------
+    try:
+        ready_patterns = [
+            re.compile(p, re.IGNORECASE) for p in (args.ready_pattern or READY_PATTERNS[args.type])
+        ]
+    except re.error as exc:
+        raise UsageError(f"bad --ready-pattern: {exc}") from exc
+    env_files = []
+    for path in args.env_file or []:
+        full = path if os.path.isabs(path) else os.path.join(start_path, path)
+        if not os.path.isfile(full):
+            raise UsageError(f"--env-file {path} not found (looked in {start_path})")
+        env_files.append(full)
 
     # ---- pre-flight -------------------------------------------------------------------
     preflight_failed_reasons: list[str] = []
@@ -569,22 +658,18 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
     # Piped stdout is block-buffered in Python; without this a Flask/uvicorn app's ready line
     # can sit in a buffer past the boot timeout. Harmless for non-Python apps.
     env.setdefault("PYTHONUNBUFFERED", "1")
-    for path in args.env_file or []:
-        env.update(
-            parse_env_file(os.path.join(start_path, path) if not os.path.isabs(path) else path)
-        )
+    for full in env_files:
+        env.update(parse_env_file(full))
     for item in args.env or []:
         if "=" in item:
             k, v = item.split("=", 1)
             env[k] = v
 
     # ---- boot -------------------------------------------------------------------------
-    ready_patterns = [
-        re.compile(p, re.IGNORECASE) for p in (args.ready_pattern or READY_PATTERNS[args.type])
-    ]
     watcher = ProcessWatcher(args.command, start_path, env, log_path)
     watcher.start()
     app["pid"] = watcher.proc.pid if watcher.proc else None
+    app["pgid"] = watcher.pgid
 
     ready_at: Optional[float] = None
     seen = 0
@@ -659,13 +744,14 @@ def run_capture(args: argparse.Namespace) -> dict[str, Any]:
             app["note"] = "max_seconds reached before the idle window completed"
 
     # ---- shutdown + classify ----------------------------------------------------------
+    still_running = watcher.exit_code() is None
     watcher.shutdown()
-    if (
-        app["exit_code"] is None
-        and watcher.exit_code() is not None
-        and app["boot_status"] not in HEALTHY
-    ):
+    if still_running:
+        app["terminated_by_capture"] = True  # any exit code now is our own signal, not the app's
+    elif app["exit_code"] is None:
         app["exit_code"] = watcher.exit_code()
+    if watcher.reader_error:
+        app["capture_error"] = watcher.reader_error
     all_lines = watcher.snapshot()
     errors, warnings = classify_lines(all_lines)
     app["log_errors"] = errors
@@ -683,14 +769,6 @@ def merge_and_write(args: argparse.Namespace, app: dict[str, Any]) -> str:
         else ".co-dwerker.verify-localapp.json"
     )
     out_path = out_name if os.path.isabs(out_name) else os.path.join(repo_root, out_name)
-    ensure_git_exclude(
-        repo_root,
-        [
-            os.path.basename(out_path),
-            ".co-dwerker.localapp-*.log",
-            ".co-dwerker.localapp-diff.json",
-        ],
-    )
 
     doc: dict[str, Any] = {}
     if os.path.exists(out_path):
@@ -701,7 +779,7 @@ def merge_and_write(args: argparse.Namespace, app: dict[str, Any]) -> str:
             doc = {}
     doc.update(
         {
-            "schema_version": 2,
+            "schema_version": SCHEMA_VERSION,
             "mode": args.mode,
             "captured_at": _now_iso(),
             "branch": _git(["branch", "--show-current"], repo_root) or None,
@@ -711,14 +789,30 @@ def merge_and_write(args: argparse.Namespace, app: dict[str, Any]) -> str:
             "idle_seconds": args.idle_seconds,
         }
     )
-    apps = [a for a in doc.get("apps", []) if isinstance(a, dict) and a.get("name") != app["name"]]
-    apps.append(app)
-    doc["apps"] = apps
+    kept: list[dict[str, Any]] = []
+    for a in doc.get("apps", []):
+        if not isinstance(a, dict) or a.get("name") == app["name"]:
+            continue
+        # Entries from a different issue are stale leftovers; a fresh issue starts clean.
+        if args.issue is not None and a.get("issue_number") not in (None, args.issue):
+            continue
+        kept.append(a)
+    kept.append(app)
+    doc["apps"] = kept
     tmp = out_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
         fh.write("\n")
     os.replace(tmp, out_path)
+    # Housekeeping after the result is safely on disk.
+    ensure_git_exclude(
+        repo_root,
+        [
+            os.path.basename(out_path),
+            ".co-dwerker.localapp-*.log",
+            ".co-dwerker.localapp-diff.json",
+        ],
+    )
     return os.path.relpath(out_path, repo_root)
 
 
@@ -730,6 +824,8 @@ def print_summary(app: dict[str, Any], out_rel: str) -> None:
     print(f"[co-dwerker localapp] mode={app['mode']} app={app['name']} type={app['type']}")
     print(f"  command: {app['command']}  (cwd {app['start_path']})")
     status = app["boot_status"]
+    if app.get("capture_error"):
+        print(f"  CAPTURE FAILED: {app['capture_error']} — no output was recorded")
     if status == "skipped":
         print("  boot_status: skipped (user opted out; recorded for the diff step)")
     elif status == "preflight_failed":
@@ -742,10 +838,10 @@ def print_summary(app: dict[str, Any], out_rel: str) -> None:
             extra = f" after {app['boot_duration_seconds']}s"
         if app["ready_signal_match"]:
             extra += f", ready signal /{app['ready_signal_match']}/"
-        if app["exit_code"] is not None:
+        if app["exit_code"] is not None and not app.get("terminated_by_capture"):
             extra += f", exit code {app['exit_code']}"
         print(f"  boot_status: {status}{extra}")
-        print(f"  pid: {app['pid']}")
+        print(f"  pid: {app['pid']}  pgid: {app['pgid']}")
         for p in app["http_probes"]:
             code = p.get("status_code")
             shown = code if code is not None else f"no response ({p.get('error', '')})"
@@ -763,7 +859,7 @@ def print_summary(app: dict[str, Any], out_rel: str) -> None:
             for t in app["last_output_lines"][-8:]:
                 print(f"    | {t[:160]}")
     print(f"  wrote: {out_rel}  log: {app['log_file']}")
-    print(f"RESULT: {status}")
+    print(f"RESULT: {'capture_failed' if app.get('capture_error') else status}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -814,29 +910,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
-    if args.max_seconds is None:
-        args.max_seconds = args.boot_timeout + args.idle_seconds + 30
-    if not shlex.split(args.command):
-        print("localapp_capture: --command is empty", file=sys.stderr)
-        return 4
+def _run(args: argparse.Namespace) -> int:
+    try:
+        if not shlex.split(args.command):
+            raise UsageError("--command is empty")
+    except ValueError as exc:
+        raise UsageError(f"--command is not valid shell syntax: {exc}") from exc
     start_path = os.path.abspath(os.path.join(args.repo_root, args.cwd))
     if not os.path.isdir(start_path):
-        print(f"localapp_capture: start path {start_path} does not exist", file=sys.stderr)
-        return 4
+        raise UsageError(f"start path {start_path} does not exist")
     app = run_capture(args)
     out_rel = merge_and_write(args, app)
     if args.json:
         print(json.dumps(app, indent=2))
     else:
         print_summary(app, out_rel)
+    if app.get("capture_error"):
+        return 4
     status = app["boot_status"]
     if status in HEALTHY or status == "skipped":
         return 0
     if status == "preflight_failed":
         return 3
     return 2
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return _run(args)
+    except UsageError as exc:
+        print(f"localapp_capture: {exc}", file=sys.stderr)
+        return 4
+    except Exception as exc:  # noqa: BLE001 - a crash must never look like a boot verdict
+        print(f"localapp_capture: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 4
 
 
 if __name__ == "__main__":

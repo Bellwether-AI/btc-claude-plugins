@@ -23,8 +23,8 @@ Derive these once per skill invocation, from inside the repo:
 
 ```bash
 TODAY=$(date +%Y-%m-%d)
-MAIN_CHECKOUT=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")  # main checkout, even from a linked worktree
-STATE_FILE="$MAIN_CHECKOUT/.co-dwerker.state.json"   # per-clone session state (gitignored)
+MAIN_CHECKOUT=$(dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd)")   # main checkout, even from a linked worktree; works on any git
+STATE_FILE="$MAIN_CHECKOUT/.co-dwerker.state.json"   # per-clone session state (git-excluded by the scripts)
 CONFIG_FILE=".co-dwerker.json"                       # per-repo config (committed)
 GLOBAL_STATE_FILE="$HOME/.claude/co-dwerker-last-repo.json"
 GLOBAL_STATE_FILE_LEGACY="$HOME/.co-dwerker-last-repo.json"   # pre-v0.3.1 location, read-only fallback
@@ -53,7 +53,10 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/localapp_diff.py ...
 
 That exact form is what each skill's `allowed-tools` pre-approves, and it works even if the
 executable bit was lost on install. Where a skill writes `checkpoint.py mark …` it means this
-full form. References live at `${CLAUDE_PLUGIN_ROOT}/references/<name>.md`. If you ever see the
+full form. Three things the scripts already handle, so the skills do not: the state file lives
+in the main checkout and is found from any worktree; it is added to the clone's
+`.git/info/exclude` (never to the committed `.gitignore`); every per-issue artifact the capture
+writes is excluded the same way. References live at `${CLAUDE_PLUGIN_ROOT}/references/<name>.md`. If you ever see the
 placeholder unsubstituted, the plugin root is two directories above the skill's own directory
 (the "Base directory for this skill" line printed when the skill loaded).
 
@@ -110,13 +113,14 @@ checkpoint.py end-session --repo-owner-name o/r --prs-created 57 --prs-merged 57
 ```
 
 Step ids are `<phase>.<step>` and match the headings in `skills/work/SKILL.md` (for example
-`1.fetch`, `2.brainstorm`, `3.5a`, `5.cleanup`). Values after `--set` are parsed as JSON when they
-look like JSON (`57`, `true`, `[1,2]`) and kept as strings otherwise. Exit codes: 0 ok, 1 gate
-blocked, 2 usage or state-file error.
+`1.fetch`, `2.brainstorm`, `3.5a`, `5.cleanup`). Every heading is a step, marked even when its
+text does not repeat the command. Values after `--set` are parsed as JSON when they look like JSON
+(`57`, `true`, `[1,2]`) and kept as strings otherwise; store paths other steps re-read (design
+doc, plan, worktree) as absolute paths. Exit codes: 0 ok, 1 gate blocked, 2 usage or state-file
+error.
 
-If `checkpoint.py` warns that the state file is not gitignored, append `.co-dwerker.state.json`
-to `.gitignore` on the current branch so the change ships with the PR (`end-session` also adds it
-if still missing).
+`progress.status` is the issue's status (`in_progress` from `start-issue` until `finish-issue`);
+`progress.step_status` is the last mark. Resume Check keys on `progress.issue` being set.
 
 **Context keys other steps rely on** (all under `progress.context`):
 
@@ -217,12 +221,13 @@ steps use the matching tool.
 - **Config edits in the worktree.** `.co-dwerker.json` is repo config. When Step 3.5a changes it
   (custom run command, no-runnable-app flag, permanent warning dismissal), commit that change on
   the feature branch right away so it ships with the PR and the worktree can be removed cleanly.
+  The state file and the capture artifacts never need this; they are excluded, not ignored.
 
 ---
 
 ## 9. File schemas
 
-### `.co-dwerker.state.json` (main checkout, gitignored)
+### `.co-dwerker.state.json` (main checkout, excluded via `.git/info/exclude`)
 
 Written incrementally by `checkpoint.py` during a session; `end-session` fills in `last_session`
 and the top-level keys from `progress` at exit.
@@ -239,7 +244,8 @@ and the top-level keys from `progress` at exit.
     "issue": 42,
     "phase": "3",
     "step": "3.5a",
-    "status": "in_progress | completed",
+    "status": "in_progress | completed   (issue status; completed only after finish-issue)",
+    "step_status": "in_progress | completed   (the last mark)",
     "started_at": "ISO-8601",
     "updated_at": "ISO-8601",
     "completed_steps": ["3.1", "3.1b", "3.2", "3.3", "3.4", "3.5"],

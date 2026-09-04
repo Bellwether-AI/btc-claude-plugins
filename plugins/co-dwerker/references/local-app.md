@@ -53,7 +53,9 @@ command (use `--type custom`, or the matching type if it is obviously one of the
 - `host.json` plus `package.json`: Azure Functions wins (more specific).
 - The script knows each type's ready signal and default port. Pass `--port` when the app does not
   use the default, `--ready-pattern` when the framework prints something unusual, and `--probe`
-  when there is a better health path than `/health`, `/healthz`, `/`.
+  when there is a better health path than `/health`, `/healthz`, `/`. If the entry point needs
+  arguments or environment (a port, a config path), put them in `--command` / `--env` exactly as
+  a developer would type them; the command runs through the shell.
 - Nothing detected and no cached config: Step 3.1b writes nothing and moves on; Step 3.5a asks the
   user (§4.3). Neither step invents a command.
 
@@ -77,12 +79,14 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/localapp_capture.py --mode verify   --name
 - Exit codes: **0** healthy (`started` / `started_no_signal` / `skipped`), **2** boot failure
   (`failed_to_start`, `timeout`, `crashed_during_idle`), **3** `preflight_failed`, **4** usage
   error. The last line is always `RESULT: <boot_status>`.
-- The summary prints the `pid:` line, the first three errors and, on failure, the last output
-  lines. The full log is `.co-dwerker.localapp-<name>-<mode>.log`; read it before deciding
-  anything about a failure.
-- Record the PID from the summary so a later run can recognise a stale process of ours:
-  `checkpoint.py set --append local_app_pids=<pid>` (the script kills its own process group on
-  exit, so this matters only if the script itself was killed).
+- The summary prints a `pid: … pgid: …` line, the first three errors and, on failure, the last
+  output lines. The full log is `.co-dwerker.localapp-<name>-<mode>.log`; read it before deciding
+  anything about a failure. `RESULT: capture_failed` (exit 4) means the script could not record
+  output at all (for example an unwritable repo root); fix that before trusting any verdict.
+- Record the pgid from the summary so a later run can recognise a stale process of ours:
+  `checkpoint.py set --append local_app_pids=<pgid>`. For a compound command the pid is the
+  shell's; the process group is what actually holds the port. The script kills its whole group on
+  exit, so this matters only if the script itself was killed.
 - Time cap: 15 minutes per step across all apps in the repo. If you hit it, stop starting new
   apps, mark the rest as not run, and treat the situation as a boot failure for gating.
 
@@ -137,9 +141,9 @@ healthy, run the diff (§4.4) and work through any decisions (§4.5) → record 
 Every remediation here is local and reversible. Log what you tried; if you end up at the blocker
 gate the user should see it.
 
-- **Port in use.** `lsof -nP -iTCP:<port> -sTCP:LISTEN` shows the holder. If its PID is in
-  `progress.context.local_app_pids`, it is a stale process of ours: `kill -TERM <pid>`, wait a
-  few seconds, re-check once. If it is not ours, look at `ps -p <pid> -o comm=,user=,lstart=`.
+- **Port in use.** `lsof -nP -iTCP:<port> -sTCP:LISTEN` shows the holder. If its PID or its
+  process group (`ps -o pgid= -p <pid>`) is in `progress.context.local_app_pids`, it is a stale
+  process of ours: `kill -TERM -- -<pgid>`, wait a few seconds, re-check once. If it is not ours, look at `ps -p <pid> -o comm=,user=,lstart=`.
   Anything the user might have started on purpose, especially a process older than this session,
   gets escalated, not killed.
 - **Missing environment variables.** When startup fails on a missing variable, or a template
@@ -283,9 +287,14 @@ no probe response) · `crashed_during_idle` · `preflight_failed` · `skipped`.
 
 Normalization strips ANSI codes, leading timestamps, UUIDs, long hex ids, PIDs, ports after a
 host, memory addresses, and collapses whitespace. It keeps message text, exception types, and
-in-repo file paths, so the same event on two boots produces the same key. The classifier matches
-words like "error" and "warning" anywhere in a line, so "0 errors" or "error handler registered"
-are captured too; they appear in both runs and diff out, but they inflate pre-existing counts.
+in-repo file paths, so the same event on two boots produces the same key. Multi-line entries are
+keyed on their first line plus the final exception line, not on stack frames, so a traceback does
+not become "new" because a line number above it moved. The classifier treats "error(s)",
+"err", "warning(s)" and "warn" as level words only when they stand alone (`ERROR:app`, `[warn]`,
+`npm ERR!`, `2 errors`), so `/api/error 200` and `0 Error(s)` are not captured; "error handler
+registered" still is, and diffs out because it appears in both runs. Both files carry
+`schema_version`; if the baseline was captured by an older script version, re-run the baseline
+rather than trusting the diff.
 
 ### Edge cases
 

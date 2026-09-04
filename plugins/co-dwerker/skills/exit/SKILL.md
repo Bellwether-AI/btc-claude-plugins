@@ -39,12 +39,11 @@ checkpoint.py end-session --repo-owner-name $REPO_OWNER_NAME \
   --prs-created <numbers> --prs-merged <numbers>
 ```
 
-This writes `last_session` and the top-level keys from `progress` (leaving `progress` itself
-intact for Resume Check), writes the global last-repo file
-`~/.claude/co-dwerker-last-repo.json` so `/co-dwerker:work` can find this repo from anywhere,
-removes the pre-v0.3.1 global file, and appends `.co-dwerker.state.json` to `.gitignore` if it is
-missing. If it reports that it added the `.gitignore` line, include that change in the WIP commit
-offered in step 7 or tell the user it is pending.
+Omit any list flag that has nothing to report. This writes `last_session` and the top-level keys
+from `progress` (leaving `progress` itself intact for Resume Check), writes the global last-repo
+file `~/.claude/co-dwerker-last-repo.json` so `/co-dwerker:work` can find this repo from
+anywhere, and removes the pre-v0.3.1 global file. The state file is already kept out of
+`git status` by `.git/info/exclude`; no `.gitignore` change is needed.
 
 ## 3. Update the project board (project mode only)
 

@@ -9,6 +9,8 @@ The state file always lives in the MAIN checkout of the repository. When run
 from a linked worktree the script resolves that location itself (via
 ``git rev-parse --git-common-dir``), so the same file is updated no matter
 which worktree the session is in. Pass ``--state-file`` only to override.
+The file is added to the clone's ``.git/info/exclude`` automatically, so it
+never needs a ``.gitignore`` entry and never shows up in ``git status``.
 
 Usage (invoke as ``python3 <plugin>/scripts/checkpoint.py ...``):
 
@@ -21,6 +23,10 @@ Usage (invoke as ``python3 <plugin>/scripts/checkpoint.py ...``):
   checkpoint.py show            # progress block + last_session summary
   checkpoint.py finish-issue    # record completion and clear the per-issue progress
   checkpoint.py end-session --repo-owner-name owner/repo --prs-created 57 --prs-merged 57
+
+``progress.status`` is the ISSUE status: ``in_progress`` from ``start-issue``
+until ``finish-issue`` sets ``completed``. ``progress.step_status`` is the
+status of the most recent ``mark``.
 
 Step ids are ``<phase>.<step>`` and mirror the headings in skills/work/SKILL.md.
 Unknown step ids are accepted (with a note) so SKILL.md edits never break the
@@ -85,37 +91,55 @@ def _today() -> str:
     return _dt.date.today().isoformat()
 
 
-def main_checkout(start: str = ".") -> str:
-    """Absolute path of the main checkout, from the main checkout or any linked worktree."""
+def _git(args: list[str], cwd: str) -> str:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=start,
-            capture_output=True,
-            text=True,
-            check=False,
+            ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
         )
-        common = result.stdout.strip()
-        if result.returncode != 0 or not common:
-            # Older git without --path-format: fall back to plain --git-common-dir.
-            result = subprocess.run(
-                ["git", "rev-parse", "--git-common-dir"],
-                cwd=start,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            common = result.stdout.strip()
-            if result.returncode != 0 or not common:
-                return os.path.abspath(start)
-            common = os.path.abspath(os.path.join(start, common))
-        return os.path.dirname(common)
     except OSError:
-        return os.path.abspath(start)
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def main_checkout(start: str = ".") -> str:
+    """Absolute path of the main checkout, from the main checkout or any linked worktree."""
+    common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], start)
+    if not common:
+        # Older git without --path-format: plain --git-common-dir may be relative.
+        common = _git(["rev-parse", "--git-common-dir"], start)
+        if not common:
+            return os.path.abspath(start)
+        common = os.path.abspath(os.path.join(start, common))
+    return os.path.dirname(common)
 
 
 def default_state_file() -> str:
     return os.path.join(main_checkout(), STATE_FILE_NAME)
+
+
+def ensure_excluded(path: str) -> None:
+    """Add the state file to the clone's shared info/exclude (best effort, never fatal)."""
+    repo_dir = os.path.dirname(os.path.abspath(path)) or "."
+    exclude = _git(["rev-parse", "--git-path", "info/exclude"], repo_dir)
+    if not exclude:
+        return
+    if not os.path.isabs(exclude):
+        exclude = os.path.join(repo_dir, exclude)
+    name = os.path.basename(path)
+    try:
+        text = ""
+        if os.path.exists(exclude):
+            with open(exclude, encoding="utf-8") as fh:
+                text = fh.read()
+        if name in (ln.strip() for ln in text.splitlines()):
+            return
+        os.makedirs(os.path.dirname(exclude), exist_ok=True)
+        with open(exclude, "a", encoding="utf-8") as fh:
+            if text and not text.endswith("\n"):
+                fh.write("\n")  # never glue our line onto an existing rule
+            fh.write(name + "\n")
+    except OSError as exc:
+        print(f"checkpoint: note — could not update {exclude}: {exc}", file=sys.stderr)
 
 
 def _load(path: str) -> dict[str, Any]:
@@ -137,36 +161,25 @@ def _load(path: str) -> dict[str, Any]:
 
 
 def _save(path: str, data: dict[str, Any]) -> None:
+    creating = not os.path.exists(path)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
+        json.dump(data, fh, indent=2, allow_nan=False)
         fh.write("\n")
     os.replace(tmp, path)
-
-
-def _warn_if_tracked(path: str) -> None:
-    """The state file is per-clone; warn if git would commit it."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", os.path.dirname(path) or ".", "check-ignore", "-q", path],
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        return
-    if result.returncode == 1:  # 1 == not ignored
-        print(
-            f"checkpoint: WARNING {os.path.basename(path)} is not gitignored. Add it to "
-            ".gitignore before committing.",
-            file=sys.stderr,
-        )
+    if creating:
+        ensure_excluded(path)
 
 
 def _parse_value(text: str) -> Any:
     """Parse ``key=value`` values as JSON when possible, else keep the string."""
+
+    def _reject(_: str) -> Any:
+        raise ValueError("NaN/Infinity are not valid JSON")
+
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
+        return json.loads(text, parse_constant=_reject)
+    except ValueError:
         return text
 
 
@@ -186,6 +199,7 @@ def _progress(data: dict[str, Any]) -> dict[str, Any]:
     prog.setdefault("phase", None)
     prog.setdefault("step", None)
     prog.setdefault("status", None)
+    prog.setdefault("step_status", None)
     prog.setdefault("completed_steps", [])
     prog.setdefault("context", {})
     return prog
@@ -220,8 +234,13 @@ def _apply_top(data: dict[str, Any], tops: list[str]) -> None:
         data[key] = value
 
 
-def _phase_of(step_id: str) -> str:
-    return step_id.split(".", 1)[0]
+def _split_step(step_id: str) -> tuple[str, str]:
+    if "." not in step_id:
+        raise CheckpointError(f"step id must look like <phase>.<step> (got {step_id!r})")
+    phase, step = step_id.split(".", 1)
+    if not phase or not step:
+        raise CheckpointError(f"step id must look like <phase>.<step> (got {step_id!r})")
+    return phase, step
 
 
 def _keep_session_context(prog: dict[str, Any]) -> None:
@@ -237,6 +256,7 @@ def cmd_start_issue(args: argparse.Namespace) -> int:
             "phase": args.phase,
             "step": None,
             "status": "in_progress",
+            "step_status": None,
             "started_at": _now(),
             "updated_at": _now(),
             "completed_steps": [],
@@ -246,7 +266,7 @@ def cmd_start_issue(args: argparse.Namespace) -> int:
     prog["context"].setdefault("main_checkout", os.path.dirname(os.path.abspath(args.state_file)))
     _apply_context(prog, args.set or [], args.append or [], [])
     _save(args.state_file, data)
-    _warn_if_tracked(args.state_file)
+    ensure_excluded(args.state_file)
     print(f"checkpoint: started issue #{args.issue} at phase {args.phase}")
     return 0
 
@@ -254,16 +274,17 @@ def cmd_start_issue(args: argparse.Namespace) -> int:
 def cmd_mark(args: argparse.Namespace) -> int:
     data = _load(args.state_file)
     prog = _progress(data)
-    phase = _phase_of(args.step_id)
-    known = PHASES.get(phase, [])
-    if phase not in PHASES or args.step_id.split(".", 1)[-1] not in known:
+    phase, step = _split_step(args.step_id)
+    if step not in PHASES.get(phase, []):
         print(
             f"checkpoint: note — {args.step_id} is not in the built-in step manifest",
             file=sys.stderr,
         )
     prog["phase"] = phase
     prog["step"] = args.step_id
-    prog["status"] = args.status
+    prog["step_status"] = args.status
+    if prog.get("issue") is not None and prog.get("status") != "in_progress":
+        prog["status"] = "in_progress"
     prog["updated_at"] = _now()
     if args.status == "completed" and args.step_id not in prog["completed_steps"]:
         prog["completed_steps"].append(args.step_id)
@@ -333,6 +354,8 @@ def cmd_show(args: argparse.Namespace) -> int:
                     else "missing " + ", ".join(missing)
                 )
             )
+    if data.get("completed_this_session"):
+        print(f"completed_this_session: {data['completed_this_session']}")
     last = data.get("last_session")
     if isinstance(last, dict):
         print("last_session:")
@@ -354,7 +377,14 @@ def cmd_finish_issue(args: argparse.Namespace) -> int:
     if isinstance(planned, list) and issue in planned:
         planned.remove(issue)
     prog.update(
-        {"issue": None, "phase": "6", "step": None, "status": "completed", "updated_at": _now()}
+        {
+            "issue": None,
+            "phase": "6",
+            "step": None,
+            "status": "completed",
+            "step_status": None,
+            "updated_at": _now(),
+        }
     )
     prog["completed_steps"] = []
     _keep_session_context(prog)
@@ -369,8 +399,14 @@ def _int_list(text: str | None) -> list[int]:
     out: list[int] = []
     for part in text.split(","):
         part = part.strip().lstrip("#")
-        if part:
+        if not part:
+            continue
+        try:
             out.append(int(part))
+        except ValueError as exc:
+            raise CheckpointError(
+                f"expected a comma-separated list of numbers, got {text!r}"
+            ) from exc
     return out
 
 
@@ -384,12 +420,13 @@ def cmd_end_session(args: argparse.Namespace) -> int:
     for n in _int_list(args.completed):
         if n not in completed:
             completed.append(n)
+    active = prog.get("issue") is not None
     data["last_session"] = {
         "date": args.date or _today(),
         "completed_issues": completed,
         "current_issue": prog.get("issue"),
-        "current_phase": prog.get("phase") if prog.get("issue") is not None else None,
-        "current_step": prog.get("step") if prog.get("issue") is not None else None,
+        "current_phase": prog.get("phase") if active else None,
+        "current_step": prog.get("step") if active else None,
         "branch": ctx.get("branch"),
         "worktree": ctx.get("worktree"),
         "prs_created": _int_list(args.prs_created),
@@ -415,19 +452,9 @@ def cmd_end_session(args: argparse.Namespace) -> int:
             {"repo_owner_name": args.repo_owner_name, "repo_local_path": data["repo_local_path"]},
         )
         try:
-            os.remove(GLOBAL_STATE_FILE_LEGACY)
+            os.remove(args.legacy_state_file)
         except OSError:
             pass
-
-    gitignore = os.path.join(repo_root, ".gitignore")
-    ignored = False
-    if os.path.exists(gitignore):
-        with open(gitignore, encoding="utf-8") as fh:
-            ignored = any(line.strip() == STATE_FILE_NAME for line in fh)
-    if not ignored:
-        with open(gitignore, "a", encoding="utf-8") as fh:
-            fh.write(f"{STATE_FILE_NAME}\n")
-        print(f"checkpoint: added {STATE_FILE_NAME} to .gitignore (uncommitted change)")
     print(f"checkpoint: last_session written for {data['last_session']['date']}")
     return 0
 
@@ -488,6 +515,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prs-created", help="comma-separated PR numbers")
     p.add_argument("--prs-merged", help="comma-separated PR numbers")
     p.add_argument("--global-state-file", default=GLOBAL_STATE_FILE, help=argparse.SUPPRESS)
+    p.add_argument("--legacy-state-file", default=GLOBAL_STATE_FILE_LEGACY, help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_end_session)
     return parser
 
@@ -500,6 +528,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except CheckpointError as exc:
         print(f"checkpoint: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 - any other failure is still a usage/state error
+        print(f"checkpoint: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
 
