@@ -1,6 +1,6 @@
 # GitHub Project Board & Label Setup
 
-Reference file for first-run setup tasks. Read this file when setting up a new project's board fields or priority labels.
+Reference file for first-run setup tasks. Read this file when setting up a new project's board fields or priority labels. `$REPO_OWNER` is the owner login (`gh project` wants the login); `$REPO_OWNER_NAME` is `owner/repo` (`gh label` wants that). See conventions §1.
 
 ## Project Board Field Setup (project mode only)
 
@@ -26,7 +26,7 @@ When a required field is missing, create it AND populate its option values:
 
 ```bash
 # Create Status field
-gh project field-create $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" \
+gh project field-create $PROJECT_NUMBER --owner "$REPO_OWNER" \
   --name "Status" --data-type "SINGLE_SELECT"
 ```
 
@@ -34,7 +34,7 @@ After creating the field, fetch its ID from the field list, then add each option
 
 ```bash
 # Fetch the newly created field ID
-STATUS_FIELD_ID=$(gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json \
+STATUS_FIELD_ID=$(gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER" --format json \
   | jq -r '.fields[] | select(.name == "Status") | .id')
 
 # Add option values via GraphQL
@@ -61,11 +61,11 @@ Repeat for Priority:
 
 ```bash
 # Create Priority field
-gh project field-create $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" \
+gh project field-create $PROJECT_NUMBER --owner "$REPO_OWNER" \
   --name "Priority" --data-type "SINGLE_SELECT"
 
 # Fetch field ID
-PRIORITY_FIELD_ID=$(gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER_NAME" --format json \
+PRIORITY_FIELD_ID=$(gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER" --format json \
   | jq -r '.fields[] | select(.name == "Priority") | .id')
 
 # Add option values via GraphQL

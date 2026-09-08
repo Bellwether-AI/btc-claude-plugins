@@ -1,12 +1,12 @@
 # Baseline Tests Reference
 
-This document specifies how `/co-dwerker:work` Phase 3 Step 1 (Baseline Tests) captures the repo's pre-existing test state before any code changes. It is invoked from the brief Step 1 stub in `commands/work.md`. The downstream diff treatment is in `commands/work.md` Step 5 Verify, which reads the file produced here.
+How `/co-dwerker:work` Step 3.1 captures the repo's pre-existing test and lint state before any code changes, so that Step 5 Verify can tell a regression from something that was already broken. Invoked from Step 3.1 in `skills/work/SKILL.md`; Step 3.5 in the same file reads the JSON produced here.
 
 ## Purpose
 
-Capture which tests and linters are currently failing on the unmodified target branch so that post-implementation verification can distinguish regressions (caused by this work) from pre-existing failures (already broken, not this PR's problem). This is informational only — failures do not block the workflow.
+Pre-existing test failures are common in real repos and are not this PR's problem. Recording them up front lets verification hold the line on *new* failures without forcing an unrelated cleanup first. This step is capture-and-continue: nothing here blocks the workflow.
 
-Run in the current working directory before the worktree is created in Phase 3 Step 3. The CWD reflects the target branch state with no co-dwerker edits.
+Run in the main checkout before the worktree is created in Step 3.3. The CWD reflects the target branch state with no co-dwerker edits.
 
 ## Detect available test and lint commands
 
@@ -19,7 +19,10 @@ In this order, stopping when something is found:
    - `*.csproj` / `*.sln` → `dotnet test`
    - `*.Tests.ps1` → `Invoke-Pester`
    - `go.mod` → `go test ./...`
-3. **Nothing detected** — do **not** write `.co-dwerker.baseline-tests.json`. Return control to `commands/work.md` Step 1, which will surface the user-facing skip message ("No test commands detected (checked `CLAUDE.md`, manifests). Skipping test baseline. Verification will run whatever's available after implementation.") and continue to Step 1b. Downstream Step 5 treats a missing baseline file as "no baseline available".
+3. **Test files without a manifest** — `test_*.py` / `*_test.py` (run `python3 -m pytest` if
+   pytest is installed, else `python3 -m unittest`), `*_test.go`, `*.spec.ts` / `*.test.js`, or a
+   README/CONTRIBUTING that names a test command. Use what the repo itself would use.
+4. **Nothing detected** — do not write `.co-dwerker.baseline-tests.json`. Tell the user no test commands were found (say where you looked) and continue to Step 3.1b. Step 3.5 treats a missing baseline file as "no baseline available" and holds every failure to the regression standard.
 
 ## Run each detected suite
 
@@ -31,14 +34,15 @@ If a command's tooling is missing (e.g., `pytest: command not found`), record `s
 
 ## Write the baseline file
 
-Before writing, add the file to the repo's local git exclude so intermediate `superpowers:executing-plans` commits do not accidentally include it:
+Before writing, add the file to the clone-local exclude so intermediate `superpowers:executing-plans` commits do not pick it up. `git rev-parse --git-path` resolves correctly inside linked worktrees too:
 
 ```bash
-grep -qxF '.co-dwerker.baseline-tests.json' .git/info/exclude 2>/dev/null \
-  || echo '.co-dwerker.baseline-tests.json' >> .git/info/exclude
+EXCLUDE=$(git rev-parse --git-path info/exclude)
+grep -qxF '.co-dwerker.baseline-tests.json' "$EXCLUDE" 2>/dev/null \
+  || echo '.co-dwerker.baseline-tests.json' >> "$EXCLUDE"
 ```
 
-(This only affects the local clone; the repo's `.gitignore` is not modified.)
+(The repo's `.gitignore` is not modified.)
 
 Write `.co-dwerker.baseline-tests.json` to the repo root:
 
@@ -80,8 +84,9 @@ Write `.co-dwerker.baseline-tests.json` to the repo root:
 - `kind`: `"test"` or `"lint"`. Linters share the same `suites[]` array but their `totals` and `failing_tests` fields are typically `null` / `[]` — pass/fail is determined by `exit_code` alone (0 = clean, non-zero = issues found).
 - `status` enum: `completed` (suite ran to completion), `skipped` (suite was detected but the agent chose not to run it — rare; not currently triggered by any rule in this skill, reserved for future use), `tooling_missing` (the command's binary was not found), `timeout` (cumulative 10-minute cap hit).
 - `totals`: required for `status: "completed"` test suites; `null` for lint suites, `tooling_missing`, `timeout`, or any partial-data case.
-- `failing_tests`: truncated to the first 50 entries per suite. When truncation occurred, set `failing_tests_truncated: true` so Step 5 Verify can warn the user that the baseline diff is best-effort rather than exhaustive.
+- `failing_tests`: truncated to the first 50 entries per suite. When truncation occurred, set `failing_tests_truncated: true` so Step 3.5 can warn the user that the baseline diff is best-effort rather than exhaustive.
 
 ## What to do after capture
 
-Return control to `commands/work.md` Step 1, which will surface a summary to the user (using the templates defined there) and continue to Step 1b (Baseline Local App).
+Return to `skills/work/SKILL.md` Step 3.1: summarize the result to the user in a sentence or two (suites run, pass/fail counts, where the file is) and record it with
+`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py mark 3.1 completed --set baseline_tests_file=.co-dwerker.baseline-tests.json` (or `=null` when nothing ran). Then continue to Step 3.1b.

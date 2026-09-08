@@ -1,5 +1,107 @@
 # Release Notes
 
+## co-dwerker v1.0.0
+
+### What's New
+
+**Built for current Claude Code on Fable-class models.** An audit against the live Claude Code
+harness found that several v0.3.x mechanisms had gone stale, and one of them had stopped working
+entirely. v1.0.0 fixes all of them and takes the opportunity to cut the main workflow file in half.
+
+**Step tracking that actually runs.** The old step-skipping guard asked the agent to create a task
+per step with `TaskCreate`. Those tools are disabled by default on Fable 5, Opus 4.8 and Sonnet 5,
+so since Claude Code 2.1.233 the guard was a no-op. It is replaced by `scripts/checkpoint.py`,
+which records progress in `.co-dwerker.state.json` at every step boundary and refuses to open a
+phase gate while steps are missing. A crash or a compacted context now resumes at the exact step,
+in the recorded worktree.
+
+**Local app verification is now script-driven.** One Python script boots the app, pre-flights
+ports and required config, waits for the framework's ready signal (or probes HTTP), watches for 90
+seconds, shuts down cleanly, and records normalized errors and warnings. The same script runs
+before implementation (baseline) and after (verification), so the diff compares like with like. A
+second script does the diff, groups repeated warnings, respects permanent dismissals, and exits
+with a code the agent acts on: clean, needs your decision, or blocked. Booting the app before a PR
+exists remains a hard gate; the only ways past it are a clean diff, a skip you choose with a
+recorded reason, or a repo marked as having no runnable app.
+
+**The best model, everywhere.** The plugin no longer tells you to run `/model opus` (a downgrade
+on a Fable session). It suggests `/model best`, which resolves to the latest Fable model where your
+account has it and Opus otherwise, and subagents inherit whatever the session runs. Haiku is never
+used. Cost is controlled by running at most two subagents at a time, never by lowering quality.
+
+**Modern plugin layout.** Skills live in `skills/<name>/SKILL.md` (the layout Claude Code now
+recommends), reference files are addressed with `${CLAUDE_PLUGIN_ROOT}`, the bundled scripts are
+pre-approved via `allowed-tools`, and the deprecated `work-bellwether-project` alias is hidden from
+the model's skill list while still working if you type it.
+
+**Half the size, one source of truth.** The work skill went from 786 to about 345 lines. Repo
+detection has its own reference. Environment setup, model policy, checkpoints, waiting rules,
+worktree handling, and every file schema live once in `references/conventions.md` instead of being
+copied into five files. Skill descriptions now say when to use the skill rather than summarizing
+its workflow, which testing has shown makes agents read the body instead of improvising from the
+description.
+
+### Behavior Changes
+
+- Every `/co-dwerker:work` step writes a checkpoint to `.co-dwerker.state.json` in the main
+  checkout during the session, not only at exit. The script keeps the file out of `git status`
+  through the clone's `.git/info/exclude`; nothing is added to your committed `.gitignore`.
+- Gates are presented as structured choices (`AskUserQuestion` options) with the recommended
+  option first.
+- Phase 5 cleanup uses `ExitWorktree` when the worktree was created natively and `git worktree
+  remove` otherwise. `git branch -D` is used after a squash merge since `-d` would refuse.
+- CI is watched with `gh run watch --exit-status` under a 10-minute timeout rather than a polling
+  loop with `sleep`.
+- New per-issue files appear beside the baseline JSON: `.co-dwerker.verify-localapp.json`,
+  `.co-dwerker.localapp-diff.json`, and `.co-dwerker.localapp-<app>-<mode>.log`. All are excluded
+  from git by the scripts and deleted at Phase 5 cleanup.
+- `/co-dwerker:exit` no longer derives the auto-memory directory with a `sed` transform; it uses
+  the directory your session already loads `MEMORY.md` from.
+- Dismissed-for-this-PR warning reasons are now persisted in the state file, so exiting between
+  Step 3.5a and Step 3.7 no longer loses them, and the verification diff honors them.
+- Steps are referred to by their checkpoint ids (Step 3.1b, Step 3.5a) throughout the skill text.
+
+**Reviewed before release.** Four independent review passes (skill-creator framework,
+superpowers writing-skills, a Python code review, and a live dry run that executed the
+instructions in a scratch repo with a real worktree) caught and fixed defects before this shipped.
+Two are worth knowing about: every project-mode `gh project` command had passed `owner/repo` where
+GitHub wants the owner login, so project mode had been failing at the first board call since
+v0.3.x; and the capture script could leave an app's child processes running when a launcher
+exited early, which would have made the next verification blame "a process that is not ours".
+See the CHANGELOG "Fixed" list.
+
+### Requirements
+
+- `python3` 3.9 or newer on PATH (the scripts are stdlib-only; no packages to install).
+- superpowers, pr-review-toolkit, commit-commands, and episodic-memory plugins, as before.
+
+### Known Issues
+
+- `allowed-tools` substitution of `${CLAUDE_PLUGIN_ROOT}` in frontmatter is documented but not yet
+  observed in daily use. If Claude Code still prompts for permission to run the scripts, that is
+  the first thing to report.
+- Shell variables do not persist between the agent's Bash calls; the skills now say so and treat
+  `$NAME` as "the value you determined earlier", but an agent that forgets will get an empty
+  variable rather than an error.
+- `localapp_capture.py` has best-effort Windows handling (no process groups) and has only been
+  exercised on macOS.
+- The test baseline (Phase 3 Step 1) is still captured by the agent following prose; only the
+  local-app side has scripts.
+- The capture script's log classifier treats "error(s)", "err", "warning(s)" and "warn" as level
+  words only when they stand alone (`ERROR:app`, `[warn]`, `npm ERR!`, `2 errors`). Prose such as
+  "error handler registered" is still captured; it appears in both runs and diffs out, but it
+  inflates the pre-existing counts. Captures made by an older script version carry a lower
+  `schema_version`; re-run the baseline rather than diffing across versions.
+
+### Upgrade Notes
+
+- No data migration. Existing `.co-dwerker.json` and `.co-dwerker.state.json` files continue to
+  work; `progress` and the new context keys are added on first use.
+- If you had `/co-dwerker:work-bellwether-project` in muscle memory it still works; it simply
+  redirects.
+
+---
+
 ## azure-appservice-cert-rollout v0.1.0
 
 ### What's New
