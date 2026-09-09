@@ -1,43 +1,46 @@
 #!/usr/bin/env python3
 """
-usage_tripwire.py — Local session-usage tripwire for Claude Code (Matt Lax / Bellwether).
+usage_limiter.py — plan-usage guard for Claude Code (claude-extra-usage-limiter-bellwether).
 
 WHY THIS EXISTS
 ---------------
-On a Claude Teams plan, "extra-usage credits" (pay-as-you-go overage past the
-plan's included session/weekly usage) are enabled at the ORG level and a member
-cannot turn them off. Once a session window hits 100%, Claude Code keeps working
-on credits with no pause. This script is a *local* guard that watches plan usage
-and stops work BEFORE it spills into credits, so credits are only ever spent when
-Matt explicitly opts in.
+On a Claude subscription, "extra-usage credits" (pay-as-you-go overage past the
+plan's included 5-hour and 7-day usage) can be enabled at the account or
+organization level. On a Teams plan a member cannot turn them off. Once a usage
+window hits 100%, Claude Code keeps working on credits with no pause. This script
+is a *local* guard that watches plan usage and stops work BEFORE it spills into
+credits, so credits are only ever spent when the user explicitly opts in.
 
 There is NO officially-supported way to read plan usage from a hook or the CLI.
-Every Anthropic feature request for one is closed as not-planned/stale. The
-community-standard workaround (used by claude-usage-widget, herdr-agent-usage,
-ohugonnot/claude-code-statusline, etc.) is to read the undocumented cache field
+The community-standard workaround is to read the undocumented cache field
 `cachedUsageUtilization` that Claude Code persists in ~/.claude.json. This script
-does that. It is UNSUPPORTED and MAY BREAK on a Claude Code update — which is why
-the SessionStart self-check fails LOUD the moment the shape changes, so we know.
+does that. It is UNSUPPORTED and MAY BREAK on a Claude Code update, which is why
+the SessionStart self-check fails LOUD the moment the shape changes.
 
-VERIFIED FACT (2026-09-04): the cache goes stale. It read 4% while a live
-`claude -p /usage` probe showed 42%, and Claude Code did not refresh it once
-during ~10 min of heavy work. So this script actively (and throttled) refreshes
-the cache by spawning a detached `claude -p /usage`, guarded against recursion.
+The cache goes stale (observed: 4% cached while live usage was 42%, with no
+refresh during ~10 minutes of heavy work). So this script actively, and with a
+throttle, refreshes the cache by spawning a detached `claude -p /usage`, guarded
+against recursion by the RECURSION_ENV variable.
 
 MODES (pick with --mode)
 ------------------------
   statusline  -> one compact status-bar line (reads stdin JSON, merges live rate_limits)
-  gate        -> PreToolUse: HARD-DENY tool calls at/above BLOCK_PCT, warn at WARN_PCT
+  gate        -> PreToolUse: HARD-DENY tool calls at/above block_pct, warn at warn_pct
   context     -> UserPromptSubmit: inject a one-line usage status into the turn
-  selfcheck   -> SessionStart: validate the cache shape, fail LOUD if broken
+  selfcheck   -> SessionStart: validate the cache shape, fail LOUD if broken;
+                 also record $CLAUDE_PLUGIN_ROOT in the plugin-root pointer file
   dump        -> print the parsed reading as JSON (debugging / "know when it breaks")
 
 All hook modes FAIL OPEN (never brick the session): if usage data is missing or
 stale, they allow the action but say so loudly. Only a KNOWN reading at/above the
 block threshold denies a tool call.
 
-CONFIG: edit the constants block below. This is a local workstation script; per
-Matt's conventions it needs no lint/tests.
+CONFIG
+------
+Defaults live in DEFAULTS below. Any key may be overridden in
+~/.claude/claude-extra-usage-limiter.json. Paths are overridable through the
+CEUL_CLAUDE_JSON, CEUL_STATE_DIR and CEUL_CONFIG environment variables (used by
+the test suite; not needed in normal use).
 """
 
 from __future__ import annotations
@@ -51,25 +54,35 @@ import time
 from datetime import datetime, timezone
 
 # -----------------------------------------------------------------------------
-# CONFIG — tune these freely.
+# CONFIG — defaults; override any key in ~/.claude/claude-extra-usage-limiter.json
 # -----------------------------------------------------------------------------
-WARN_PCT = 85          # wind-down warning at/above this % of a plan window
-BLOCK_PCT = 97         # HARD-DENY tool calls at/above this % (protects against runaway)
-REFRESH_AFTER_MIN = 5  # refresh the cache when it is older than this (active work only)
-STALE_LOUD_MIN = 20    # if the reading is older than this, announce it loudly
-WARN_THROTTLE_MIN = 3  # do not repeat the warn banner more often than this
+DEFAULTS = {
+    "warn_pct": 85,  # wind-down warning at/above this % of a plan window
+    "block_pct": 97,  # HARD-DENY tool calls at/above this % (protects against runaway)
+    "refresh_after_min": 5,  # refresh the cache when older than this (active work only)
+    "stale_loud_min": 20,  # announce loudly when the reading is older than this
+    "warn_throttle_min": 3,  # minimum gap between repeated warn banners
+}
 
 HOME = os.path.expanduser("~")
-CLAUDE_JSON = os.path.join(HOME, ".claude.json")
-STATE_DIR = os.path.join(HOME, ".claude", ".usage-tripwire")
+CLAUDE_JSON = os.environ.get("CEUL_CLAUDE_JSON") or os.path.join(HOME, ".claude.json")
+STATE_DIR = os.environ.get("CEUL_STATE_DIR") or os.path.join(
+    HOME, ".claude", ".claude-extra-usage-limiter"
+)
+CONFIG_FILE = os.environ.get("CEUL_CONFIG") or os.path.join(
+    HOME, ".claude", "claude-extra-usage-limiter.json"
+)
 REFRESH_MARKER = os.path.join(STATE_DIR, "last-refresh")
 WARN_MARKER = os.path.join(STATE_DIR, "last-warn")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
-LOG_FILE = os.path.join(STATE_DIR, "tripwire.log")
+LOG_FILE = os.path.join(STATE_DIR, "limiter.log")
+PLUGIN_ROOT_FILE = os.path.join(STATE_DIR, "plugin-root")
 
 # Set in the environment of the spawned `claude -p /usage` refresh so every hook
 # in that child session no-ops instead of recursing.
-RECURSION_ENV = "CLAUDE_USAGE_TRIPWIRE_REFRESH"
+RECURSION_ENV = "CLAUDE_EXTRA_USAGE_LIMITER_REFRESH"
+
+SETUP_COMMAND = "/claude-extra-usage-limiter-bellwether:setup"
 
 # ANSI colors for the status line.
 C_GREEN = "\033[32m"
@@ -90,6 +103,35 @@ def _log(msg: str) -> None:
             fh.write(f"{datetime.now().isoformat(timespec='seconds')} {msg}\n")
     except Exception:
         pass
+
+
+def load_config() -> dict:
+    """DEFAULTS merged with the user's config file. Never raises; bad values are ignored."""
+    cfg = dict(DEFAULTS)
+    try:
+        with open(CONFIG_FILE) as fh:
+            user = json.load(fh)
+    except FileNotFoundError:
+        return cfg
+    except Exception as e:
+        _log(f"config ignored ({CONFIG_FILE}): {e}")
+        return cfg
+    if not isinstance(user, dict):
+        _log(f"config ignored ({CONFIG_FILE}): not an object")
+        return cfg
+    for key in DEFAULTS:
+        val = user.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool) and val >= 0:
+            cfg[key] = val
+        elif key in user:
+            _log(f"config key {key!r} ignored: {val!r}")
+    if not cfg["warn_pct"] < cfg["block_pct"]:
+        _log("config ignored: warn_pct must be < block_pct; using defaults for both")
+        cfg["warn_pct"], cfg["block_pct"] = DEFAULTS["warn_pct"], DEFAULTS["block_pct"]
+    return cfg
+
+
+CFG = load_config()
 
 
 def _marker_age_min(path: str) -> float:
@@ -133,11 +175,15 @@ def _fmt_reset(dt) -> str:
 def _pct_color(pct) -> str:
     if pct is None:
         return C_DIM
-    if pct >= BLOCK_PCT:
+    if pct >= CFG["block_pct"]:
         return C_RED
-    if pct >= WARN_PCT:
+    if pct >= CFG["warn_pct"]:
         return C_YELLOW
     return C_GREEN
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 # -----------------------------------------------------------------------------
@@ -151,7 +197,7 @@ def read_usage(stdin_json: dict | None = None) -> dict:
       ok            bool     — cache read + minimally-valid shape
       error         str|None — why not ok
       age_min       float|None — how old the cache reading is
-      stale         bool     — age_min > STALE_LOUD_MIN
+      stale         bool     — age_min > stale_loud_min
       session_pct / session_reset (datetime|None)
       week_pct / week_reset
       worst_pct     max(session, week) used for gating
@@ -160,11 +206,21 @@ def read_usage(stdin_json: dict | None = None) -> dict:
       source        'stdin+cache' | 'cache' | None
     """
     r = {
-        "ok": False, "error": None, "age_min": None, "stale": True,
-        "session_pct": None, "session_reset": None,
-        "week_pct": None, "week_reset": None, "worst_pct": None,
-        "credits_enabled": None, "credits_used": None, "credits_limit": None,
-        "credits_ccy": "USD", "credits_dp": 2, "spend_limit_reached": None,
+        "ok": False,
+        "error": None,
+        "age_min": None,
+        "stale": True,
+        "session_pct": None,
+        "session_reset": None,
+        "week_pct": None,
+        "week_reset": None,
+        "worst_pct": None,
+        "credits_enabled": None,
+        "credits_used": None,
+        "credits_limit": None,
+        "credits_ccy": "USD",
+        "credits_dp": 2,
+        "spend_limit_reached": None,
         "source": None,
     }
 
@@ -187,7 +243,7 @@ def read_usage(stdin_json: dict | None = None) -> dict:
         return r
 
     fetched_ms = cu.get("fetchedAtMs")
-    if isinstance(fetched_ms, (int, float)):
+    if _is_num(fetched_ms):
         r["age_min"] = (time.time() * 1000 - fetched_ms) / 60000.0
 
     fh_win = util.get("five_hour") or {}
@@ -212,32 +268,32 @@ def read_usage(stdin_json: dict | None = None) -> dict:
 
     # --- merge live stdin rate_limits (status line only), if valid & sane ---
     # Live data appears only for some plans and only after the first API response.
-    # Guard the known epoch-leak bug (#52326): a used_percentage far above 100 is
-    # actually a leaked timestamp, so reject anything outside 0..100.
+    # Guard the known epoch-leak bug: a used_percentage far above 100 is actually a
+    # leaked timestamp, so reject anything outside 0..100.
     if stdin_json:
         rl = stdin_json.get("rate_limits") or {}
         fh_live = rl.get("five_hour") or {}
         sd_live = rl.get("seven_day") or {}
         up = fh_live.get("used_percentage")
-        if isinstance(up, (int, float)) and 0 <= up <= 100:
+        if _is_num(up) and 0 <= up <= 100:
             r["session_pct"] = up
             ra = fh_live.get("resets_at")
-            if isinstance(ra, (int, float)):
+            if _is_num(ra):
                 r["session_reset"] = datetime.fromtimestamp(ra, tz=timezone.utc)
             r["age_min"] = 0.0  # live
             r["source"] = "stdin+cache"
         wp = sd_live.get("used_percentage")
-        if isinstance(wp, (int, float)) and 0 <= wp <= 100:
+        if _is_num(wp) and 0 <= wp <= 100:
             r["week_pct"] = wp
             ra = sd_live.get("resets_at")
-            if isinstance(ra, (int, float)):
+            if _is_num(ra):
                 r["week_reset"] = datetime.fromtimestamp(ra, tz=timezone.utc)
 
     # worst window drives gating
-    cands = [p for p in (r["session_pct"], r["week_pct"]) if isinstance(p, (int, float))]
+    cands = [p for p in (r["session_pct"], r["week_pct"]) if _is_num(p)]
     r["worst_pct"] = max(cands) if cands else None
 
-    r["stale"] = (r["age_min"] is None) or (r["age_min"] > STALE_LOUD_MIN)
+    r["stale"] = (r["age_min"] is None) or (r["age_min"] > CFG["stale_loud_min"])
     r["ok"] = r["worst_pct"] is not None
     if not r["ok"] and r["error"] is None:
         r["error"] = "no session/weekly utilization values found (format changed?)"
@@ -260,11 +316,11 @@ def read_usage(stdin_json: dict | None = None) -> dict:
 def credits_str(r: dict) -> str:
     """'$4.71/$150' style, or '' if unknown."""
     used, lim, dp = r.get("credits_used"), r.get("credits_limit"), r.get("credits_dp") or 2
-    if not isinstance(used, (int, float)) or not isinstance(lim, (int, float)):
+    if not _is_num(used) or not _is_num(lim):
         return ""
-    div = 10 ** dp
+    div = 10**dp
     sign = "$" if (r.get("credits_ccy") == "USD") else ""
-    return f"{sign}{used/div:.2f}/{sign}{lim/div:.0f}"
+    return f"{sign}{used / div:.2f}/{sign}{lim / div:.0f}"
 
 
 # -----------------------------------------------------------------------------
@@ -275,10 +331,10 @@ def maybe_refresh(reading: dict) -> None:
     if os.environ.get(RECURSION_ENV) == "1":
         return  # we ARE the refresh child; do nothing
     age = reading.get("age_min")
-    fresh_enough = isinstance(age, (int, float)) and age <= REFRESH_AFTER_MIN
+    fresh_enough = _is_num(age) and age <= CFG["refresh_after_min"]
     if fresh_enough:
         return
-    if _marker_age_min(REFRESH_MARKER) <= REFRESH_AFTER_MIN:
+    if _marker_age_min(REFRESH_MARKER) <= CFG["refresh_after_min"]:
         return  # a refresh was already kicked off recently
     _touch(REFRESH_MARKER)  # claim the slot before spawning (avoids thundering herd)
 
@@ -319,17 +375,17 @@ def emit(obj: dict) -> None:
 def status_sentence(r: dict) -> str:
     """One-line plain-text status used inside injected context."""
     parts = []
-    if isinstance(r["session_pct"], (int, float)):
+    if _is_num(r["session_pct"]):
         rs = _fmt_reset(r["session_reset"])
         parts.append(f"session {r['session_pct']:.0f}%" + (f" (resets {rs})" if rs else ""))
-    if isinstance(r["week_pct"], (int, float)):
+    if _is_num(r["week_pct"]):
         parts.append(f"week {r['week_pct']:.0f}%")
     cs = credits_str(r)
     if cs:
         state = "ENABLED" if r.get("credits_enabled") else "off"
         parts.append(f"extra-usage credits {state} ({cs} used)")
     age = r.get("age_min")
-    if isinstance(age, (int, float)):
+    if _is_num(age):
         parts.append(f"data {age:.0f}m old")
     return "Plan usage: " + ", ".join(parts) if parts else "Plan usage: unavailable"
 
@@ -348,6 +404,19 @@ def is_checkpoint_action(stdin_json: dict) -> bool:
     return False
 
 
+def _record_plugin_root() -> None:
+    """Persist $CLAUDE_PLUGIN_ROOT so the user's statusLine can find this script."""
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if not root:
+        return
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(PLUGIN_ROOT_FILE, "w") as fh:
+            fh.write(root)
+    except Exception as e:
+        _log(f"could not write plugin-root pointer: {e}")
+
+
 # -----------------------------------------------------------------------------
 # Modes
 # -----------------------------------------------------------------------------
@@ -362,7 +431,8 @@ def mode_statusline(stdin_json):
     except Exception:
         pass
     try:
-        cwd = (stdin_json or {}).get("cwd") or (stdin_json or {}).get("workspace", {}).get("current_dir")
+        sj = stdin_json or {}
+        cwd = sj.get("cwd") or (sj.get("workspace") or {}).get("current_dir")
         if cwd:
             gitpath = os.path.join(cwd, ".git")
             gitdir = gitpath
@@ -381,12 +451,15 @@ def mode_statusline(stdin_json):
         pass
 
     if not r["ok"]:
-        line = f"{C_RED}⛽ usage: unavailable{C_RESET} {C_DIM}(guard blind — see tripwire.log){C_RESET}"
+        line = (
+            f"{C_RED}⛽ usage: unavailable{C_RESET} "
+            f"{C_DIM}(guard blind — see limiter.log){C_RESET}"
+        )
     else:
         col = _pct_color(r["worst_pct"])
-        s = f"{r['session_pct']:.0f}%" if isinstance(r["session_pct"], (int, float)) else "?"
+        s = f"{r['session_pct']:.0f}%" if _is_num(r["session_pct"]) else "?"
         rs = _fmt_reset(r["session_reset"])
-        w = f"{r['week_pct']:.0f}%" if isinstance(r["week_pct"], (int, float)) else "?"
+        w = f"{r['week_pct']:.0f}%" if _is_num(r["week_pct"]) else "?"
         seg = f"{col}⛽ S:{s}{C_RESET}"
         if rs:
             seg += f"{C_DIM}⟲{rs}{C_RESET}"
@@ -411,25 +484,31 @@ def mode_gate(stdin_json):
     if os.environ.get(RECURSION_ENV) == "1":
         emit({})
         return
+    stdin_json = stdin_json or {}
     r = read_usage(stdin_json)
     maybe_refresh(r)
+    warn_pct, block_pct = CFG["warn_pct"], CFG["block_pct"]
 
     # Unknown / stale-loud: FAIL OPEN, but say so (throttled) so we know it's blind.
     if not r["ok"] or r["stale"]:
-        if _marker_age_min(WARN_MARKER) > WARN_THROTTLE_MIN:
+        if _marker_age_min(WARN_MARKER) > CFG["warn_throttle_min"]:
             _touch(WARN_MARKER)
             why = r["error"] or f"usage data is {r['age_min']:.0f}m old"
-            emit({
-                "systemMessage": f"⚠ usage-tripwire is blind: {why}. Credit guard not guaranteed.",
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "additionalContext": (
-                        f"[usage-tripwire] Cannot confirm plan usage ({why}). "
-                        "Be conservative: avoid launching subagents/loops and checkpoint often "
-                        "until a fresh reading is available."
+            emit(
+                {
+                    "systemMessage": (
+                        f"⚠ extra-usage limiter is blind: {why}. Credit guard not guaranteed."
                     ),
-                },
-            })
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "additionalContext": (
+                            f"[extra-usage-limiter] Cannot confirm plan usage ({why}). "
+                            "Be conservative: avoid launching subagents/loops and checkpoint "
+                            "often until a fresh reading is available."
+                        ),
+                    },
+                }
+            )
         else:
             emit({})
         return
@@ -437,53 +516,70 @@ def mode_gate(stdin_json):
     worst = r["worst_pct"]
 
     # HARD BLOCK
-    if worst >= BLOCK_PCT:
+    if worst >= block_pct:
         if is_checkpoint_action(stdin_json):
-            emit({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": f"Checkpoint action allowed despite {worst:.0f}% usage.",
-                },
-                "systemMessage": f"⛔ {worst:.0f}% usage — allowing checkpoint only.",
-            })
+            emit(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "allow",
+                        "permissionDecisionReason": (
+                            f"Checkpoint action allowed despite {worst:.0f}% usage."
+                        ),
+                    },
+                    "systemMessage": f"⛔ {worst:.0f}% usage — allowing checkpoint only.",
+                }
+            )
             return
         rs = _fmt_reset(r["session_reset"]) or "reset time unknown"
         cs = credits_str(r)
         credit_note = ""
         if r.get("credits_enabled"):
-            credit_note = f" Extra-usage credits are ENABLED ({cs} used), so continuing now would spend them."
-        emit({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    f"Plan usage at {worst:.0f}% (>= {BLOCK_PCT}% block threshold).{credit_note} "
-                    f"STOP: do not run more tool calls. Checkpoint (git commit) is still allowed. "
-                    f"Tell Matt where things stand and wait for the reset (~{rs}). "
-                    f"Only spend extra-usage credits with Matt's explicit per-instance approval."
+            credit_note = (
+                f" Extra-usage credits are ENABLED ({cs} used), so continuing now would spend them."
+            )
+        emit(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"Plan usage at {worst:.0f}% (>= {block_pct}% block threshold)."
+                        f"{credit_note} STOP: do not run more tool calls. Checkpoint "
+                        f"(git commit) is still allowed. Tell the user where things stand and "
+                        f"wait for the reset (~{rs}). Only spend extra-usage credits with the "
+                        f"user's explicit per-instance approval."
+                    ),
+                },
+                "systemMessage": (
+                    f"⛔ extra-usage limiter: {worst:.0f}% — tool calls blocked to protect "
+                    f"extra-usage credits. Reset ~{rs}."
                 ),
-            },
-            "systemMessage": f"⛔ usage-tripwire: {worst:.0f}% — tool calls blocked to protect extra-usage credits. Reset ~{rs}.",
-        })
+            }
+        )
         return
 
     # WARN
-    if worst >= WARN_PCT:
+    if worst >= warn_pct:
         out = {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "additionalContext": (
-                    f"[usage-tripwire] Plan usage {worst:.0f}% (warn at {WARN_PCT}%, hard-block at {BLOCK_PCT}%). "
-                    "Wind down: finish and commit current work, avoid new subagents/loops, "
-                    "and prepare to pause for the reset. Do not switch to extra-usage credits without Matt's OK."
+                    f"[extra-usage-limiter] Plan usage {worst:.0f}% (warn at {warn_pct}%, "
+                    f"hard-block at {block_pct}%). Wind down: finish and commit current work, "
+                    "avoid new subagents/loops, and prepare to pause for the reset. Do not "
+                    "switch to extra-usage credits without the user's OK."
                 ),
             }
         }
-        if _marker_age_min(WARN_MARKER) > WARN_THROTTLE_MIN:
+        if _marker_age_min(WARN_MARKER) > CFG["warn_throttle_min"]:
             _touch(WARN_MARKER)
             rs = _fmt_reset(r["session_reset"])
-            out["systemMessage"] = f"⚠ usage-tripwire: {worst:.0f}% of your plan window used" + (f" (resets {rs})" if rs else "") + " — winding down."
+            out["systemMessage"] = (
+                f"⚠ extra-usage limiter: {worst:.0f}% of your plan window used"
+                + (f" (resets {rs})" if rs else "")
+                + " — winding down."
+            )
         emit(out)
         return
 
@@ -496,15 +592,19 @@ def mode_context(stdin_json):
         return
     r = read_usage(stdin_json)
     maybe_refresh(r)
+    warn_pct, block_pct = CFG["warn_pct"], CFG["block_pct"]
 
-    ctx = "[usage-tripwire] " + status_sentence(r) + "."
+    ctx = "[extra-usage-limiter] " + status_sentence(r) + "."
     if not r["ok"] or r["stale"]:
         ctx += " (Reading is unavailable or stale — guard cannot be guaranteed; be conservative.)"
-    elif r["worst_pct"] >= BLOCK_PCT:
-        ctx += f" AT/OVER the {BLOCK_PCT}% hard stop — do not start new work; checkpoint and wait for reset."
-    elif r["worst_pct"] >= WARN_PCT:
-        ctx += f" Over the {WARN_PCT}% warn line — wind down and avoid subagents/loops."
-    ctx += " Never spend extra-usage credits without Matt's explicit per-instance approval."
+    elif r["worst_pct"] >= block_pct:
+        ctx += (
+            f" AT/OVER the {block_pct}% hard stop — do not start new work; "
+            "checkpoint and wait for reset."
+        )
+    elif r["worst_pct"] >= warn_pct:
+        ctx += f" Over the {warn_pct}% warn line — wind down and avoid subagents/loops."
+    ctx += " Never spend extra-usage credits without the user's explicit per-instance approval."
 
     emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}})
 
@@ -513,31 +613,37 @@ def mode_selfcheck(stdin_json):
     if os.environ.get(RECURSION_ENV) == "1":
         emit({})
         return
+    _record_plugin_root()
     r = read_usage(stdin_json)
     maybe_refresh(r)
 
     if not r["ok"]:
         # LOUD: this is the "know when it breaks" tripwire.
-        emit({
-            "systemMessage": (
-                f"⚠⚠ usage-tripwire SELF-CHECK FAILED: {r['error']}. "
-                "The extra-usage credit guard is NOT protecting this session. "
-                "Likely a Claude Code format change. Fix ~/.claude/scripts/usage_tripwire.py "
-                "(see ~/.claude/.usage-tripwire/tripwire.log)."
-            ),
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": (
-                    "[usage-tripwire] SELF-CHECK FAILED — plan-usage reading unavailable. "
-                    f"Reason: {r['error']}. Treat the credit guard as OFF: be conservative with "
-                    "subagents/loops and confirm with Matt before anything that could spend extra-usage credits."
+        emit(
+            {
+                "systemMessage": (
+                    f"⚠⚠ extra-usage limiter SELF-CHECK FAILED: {r['error']}. "
+                    "The extra-usage credit guard is NOT protecting this session. "
+                    "Likely a Claude Code format change (or an API-key login, which has no "
+                    "plan windows). See limiter.log in ~/.claude/.claude-extra-usage-limiter/ "
+                    "and fix read_usage() in the plugin's scripts/usage_limiter.py."
                 ),
-            },
-        })
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": (
+                        "[extra-usage-limiter] SELF-CHECK FAILED — plan-usage reading "
+                        f"unavailable. Reason: {r['error']}. Treat the credit guard as OFF: be "
+                        "conservative with subagents/loops and confirm with the user before "
+                        "anything that could spend extra-usage credits."
+                    ),
+                },
+            }
+        )
         return
 
-    note = "[usage-tripwire] Active (warn %d%%, hard-block %d%%). %s" % (
-        WARN_PCT, BLOCK_PCT, status_sentence(r),
+    note = (
+        f"[extra-usage-limiter] Active (warn {CFG['warn_pct']:.0f}%, "
+        f"hard-block {CFG['block_pct']:.0f}%). {status_sentence(r)}"
     )
     if r["stale"]:
         note += " NOTE: reading is stale; a background refresh was requested."
@@ -550,6 +656,13 @@ def mode_dump(stdin_json):
     out["session_reset"] = _fmt_reset(r["session_reset"])
     out["week_reset"] = _fmt_reset(r["week_reset"])
     out["credits_str"] = credits_str(r)
+    out["config"] = CFG
+    out["paths"] = {
+        "claude_json": CLAUDE_JSON,
+        "state_dir": STATE_DIR,
+        "config_file": CONFIG_FILE,
+        "plugin_root_file": PLUGIN_ROOT_FILE,
+    }
     print(json.dumps(out, indent=2))
 
 
@@ -596,7 +709,7 @@ def main() -> int:
             if mode == "statusline":
                 sys.stdout.write(f"{C_RED}⛽ usage: guard error{C_RESET}")
             else:
-                emit({"systemMessage": f"⚠ usage-tripwire {mode} crashed: {e}"})
+                emit({"systemMessage": f"⚠ extra-usage limiter {mode} crashed: {e}"})
         except Exception:
             pass
     return 0
