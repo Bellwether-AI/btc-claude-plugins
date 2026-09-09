@@ -140,7 +140,7 @@ jq '.cachedUsageUtilization.utilization | keys' ~/.claude.json   # has the shape
 - Plugin hooks run in addition to any hooks in your own `settings.json`. If you previously
   installed the same guard by hand, let `setup` remove those entries or you will see every banner
   twice.
-- The gate hook adds roughly 50 ms to every tool call (one JSON read, no network).
+- The gate hook adds roughly 30–50 ms to every tool call (one local JSON read, no network).
 
 ## Uninstall
 
