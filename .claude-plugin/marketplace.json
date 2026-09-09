@@ -28,6 +28,12 @@
       "source": "./plugins/azure-appservice-cert-rollout",
       "description": "End-to-end workflow for rolling out a Bring-Your-Own-Certificate (BYOC) TLS certificate to Azure App Services across one or more subscriptions. Built around three hard invariants \u2014 PFX chain validation before upload, explicit tenant + sub scope confirmation before any write, and manual one-step-at-a-time execution (no batch loops). Covers tenant scope gate, PFX chain check (portable openssl script), Resource Graph discovery, plan approval, pilot, bulk execution with stop-on-first-failure + post-bind rollback, inline old-cert cleanup with sibling-binding pre-check, final verification sweep, and a redacted markdown work record.",
       "version": "0.1.0"
+    },
+    {
+      "name": "claude-extra-usage-limiter-bellwether",
+      "source": "./plugins/claude-extra-usage-limiter-bellwether",
+      "description": "Guards a Claude subscription against pay-as-you-go extra-usage credits. Watches the 5-hour and 7-day plan windows, tells Claude to wind down at 85%, hard-denies tool calls at 97% (commits and memory writes stay allowed), and shows live usage in the status line. Fails open but loud if Claude Code's usage cache changes shape.",
+      "version": "1.0.0"
     }
   ]
 }

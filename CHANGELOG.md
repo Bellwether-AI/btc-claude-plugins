@@ -2,6 +2,33 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [claude-extra-usage-limiter-bellwether v1.0.0] - 2026-09-09
+
+New plugin. Packages the usage-tripwire guard that previously lived only in one workstation's
+`~/.claude/scripts/usage_tripwire.py` + hand-wired `settings.json` hooks, so anyone can install it.
+
+### Added
+- `plugins/claude-extra-usage-limiter-bellwether/.claude-plugin/plugin.json` — manifest, version 1.0.0.
+- `hooks/hooks.json` — PreToolUse (`matcher: "*"`) gate, UserPromptSubmit context line, SessionStart self-check; all call `python3 "${CLAUDE_PLUGIN_ROOT}"/scripts/usage_limiter.py` with 10/10/15 s timeouts.
+- `scripts/usage_limiter.py` — the engine, ported from `usage_tripwire.py` and generalized. Reads Claude Code's undocumented `cachedUsageUtilization` cache in `~/.claude.json`; warns at 85% of the worst plan window, denies tool calls at 97%; refreshes the stale cache with a throttled, detached `claude -p /usage` (recursion-guarded by `CLAUDE_EXTRA_USAGE_LIMITER_REFRESH=1`).
+- `load_config()` — thresholds and intervals overridable in `~/.claude/claude-extra-usage-limiter.json` (`warn_pct`, `block_pct`, `refresh_after_min`, `stale_loud_min`, `warn_throttle_min`); invalid values are logged and ignored, `warn_pct` must be below `block_pct`, intervals have a floor of 1 minute so a misconfiguration cannot spawn a refresh on every tool call.
+- `CEUL_CLAUDE_JSON` / `CEUL_STATE_DIR` / `CEUL_CONFIG` environment overrides so the test suite never touches a real `~/.claude`. State moves to `~/.claude/.claude-extra-usage-limiter/` (`state.json`, `limiter.log`, throttle markers).
+- `_record_plugin_root()` — the SessionStart hook writes `$CLAUDE_PLUGIN_ROOT` to `<state>/plugin-root`, because plugins cannot set `statusLine` and the plugin cache path changes with every version; the user-installed status line reads that pointer, so upgrades self-heal.
+- `references/statusline.json` — the exact `statusLine` object `setup` installs; falls back to a "run setup" message when the pointer is missing.
+- `references/claude-md-snippet.md` — the wind-down policy in generic wording, bounded by marker comments so `setup` can detect a prior append.
+- `skills/setup/SKILL.md` (`disable-model-invocation: true`) — dump gate, timestamped `settings.json` backup, `jq --slurpfile` merge of the status line (asks before replacing a different one), pointer seed, detection and consented removal of hand-wired `usage_tripwire.py` hook entries so banners do not fire twice, default config file, optional CLAUDE.md append, rollback report. `allowed-tools` lists the exact commands, not utility wildcards.
+- `skills/status/SKILL.md` — plain-language reading from `--mode dump` with troubleshooting paths; the probe is exempt from the block so it works when everything else is denied.
+- `scripts/tests/` — 248 pytest tests: config, paths, cache parsing, staleness, live-stdin merge, gate bands and throttling, checkpoint classifier, context/selfcheck/statusline/dump, refresh spawning, fail-open invariants, and a subprocess matrix (5 modes × 7 cache states × 5 stdin payloads) asserting exit 0 and parseable output.
+- `pyproject.toml` (ruff/black/pytest, mirrors co-dwerker), `README.md`.
+- Root: marketplace entry, `sync-versions.yml` loop includes the new plugin, README gains an "Available plugins" table.
+
+### Fixed (relative to the original `usage_tripwire.py`, found in pre-merge review)
+- **Fail-closed on garbage.** The original only range-checked the stdin `rate_limits` path; an epoch timestamp leaked into the *cache* percentage would have hard-denied every tool call. Every percentage now goes through `_pct()` (finite, 0–100) or is treated as unknown, which fails open with the loud self-check.
+- **Crash on missing `fetchedAtMs`.** `f"{None:.0f}"` crashed gate and statusline and let selfcheck report "Active" while blind; the blind message now says "usage timestamp missing" and the status line shows `⚠stale ?`.
+- **Display string could cancel a deny.** A non-int `decimal_places` raised inside `credits_str()` before the deny was emitted; the value is validated and the credit note is wrapped in `try/except`.
+- **Checkpoint escape hatch force-allowed chained commands.** `permissionDecision: "allow"` on anything starting with `git commit` bypassed the user's own permission rules, including `git commit -m x && curl … | sh`. Checkpoints now get no decision (normal rules apply) and the classifier rejects shell chaining, requires `git <add|commit|stash>` as the first two words, and matches `memory/` / `scratchpad/` as path segments and `MEMORY.md` as a basename.
+- Non-object stdin and a non-object `~/.claude.json` no longer crash; blind and warn banners use separate throttle markers.
+
 ## [co-dwerker v1.0.0] - 2026-09-04
 
 Major version: layout, state model, and model policy all change. No data migration is required

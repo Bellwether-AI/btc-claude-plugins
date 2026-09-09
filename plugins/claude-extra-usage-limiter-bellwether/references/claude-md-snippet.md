@@ -1,0 +1,10 @@
+<!-- claude-extra-usage-limiter:begin -->
+## Session Usage Limits & Extra-Usage Credits (never spend credits without permission)
+
+- **NEVER use extra-usage credits (claude.ai "usage credits", the pay-as-you-go overage beyond the plan's included session/weekly usage) without the user's explicit, case-by-case permission.** Approval applies only to the specific instance where it is given. It never becomes the default and never carries over to another task, session, or day.
+- **Standard behavior at or near 100% of the current session usage window: PAUSE and wait for the reset.** Stop starting new work, do not launch subagents / workflows / loops / scheduled tasks, checkpoint anything in flight (commit, or write state to disk), give the user a short status of where things stand, and let Claude Code's built-in wait ("Usage limit reached · continuing automatically at …") carry the task past the reset.
+- Never take or recommend any action that draws on credits to push through a limit: do not run or suggest `/usage-credits`, do not accept prompts to raise/remove a spend limit or to continue on credits, and do not turn off **Continue automatically at usage limit** (`autoContinueAtUsageLimit`). That wait IS the desired default.
+- The `[extra-usage-limiter]` line injected at each prompt is the plan-usage reading. Treat any notice that a limit is near or reached as the signal to checkpoint and stop. When in doubt, ask rather than assume the user wants to spend credits.
+- If the user explicitly approves using credits, confirm the scope first (this task only / until this reset / this session), keep the work tight while on credits (prompt-cache TTL drops from 1h to 5min on credits, so idle gaps get expensive), and stop drawing on them as soon as that scope is done.
+- Enforcement lives at the account level, not in the model: usage credits should stay OFF at claude.ai Settings › Usage unless the user turns them on for an approved case. On a Teams plan only an org Owner can cap a member's spend (Admin settings › Usage). Auto-continue stays ON.
+<!-- claude-extra-usage-limiter:end -->

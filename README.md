@@ -16,6 +16,16 @@ In Claude Code, run:
 
 To browse available plugins, check the `plugins/` directory or view `.claude-plugin/marketplace.json`.
 
+## Available plugins
+
+| Plugin | What it does |
+|---|---|
+| `co-dwerker` | Structured daily development workflow for any GitHub repo: standup, brainstorm, execute with baselines and local-app verification, review, docs, close, session continuity |
+| `flywheel` | Flywheel work item management: orchestrate, plan, and execute tasks |
+| `agent-eval-updates` | High-autonomy tuning iteration for BTC Azure Function Agents from CosmosDB evaluations |
+| `azure-appservice-cert-rollout` | End-to-end BYOC TLS certificate rollout to Azure App Services across subscriptions |
+| `claude-extra-usage-limiter-bellwether` | Guards a Claude subscription against extra-usage credits: wind-down at 85%, tool calls denied at 97%, live usage in the status line. Run its `setup` skill after installing |
+
 ## Adding a new plugin
 
 1. Create a new directory under `plugins/` with your plugin name (kebab-case)

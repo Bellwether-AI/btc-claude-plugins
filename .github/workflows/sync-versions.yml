@@ -18,7 +18,7 @@ jobs:
         run: |
           CHANGED=false
 
-          for PLUGIN in flywheel co-dwerker; do
+          for PLUGIN in flywheel co-dwerker claude-extra-usage-limiter-bellwether; do
             PLUGIN_JSON="plugins/$PLUGIN/.claude-plugin/plugin.json"
             if [ ! -f "$PLUGIN_JSON" ]; then
               echo "Skipping $PLUGIN — no plugin.json found"
