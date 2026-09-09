@@ -1,0 +1,606 @@
+#!/usr/bin/env python3
+"""
+usage_tripwire.py — Local session-usage tripwire for Claude Code (Matt Lax / Bellwether).
+
+WHY THIS EXISTS
+---------------
+On a Claude Teams plan, "extra-usage credits" (pay-as-you-go overage past the
+plan's included session/weekly usage) are enabled at the ORG level and a member
+cannot turn them off. Once a session window hits 100%, Claude Code keeps working
+on credits with no pause. This script is a *local* guard that watches plan usage
+and stops work BEFORE it spills into credits, so credits are only ever spent when
+Matt explicitly opts in.
+
+There is NO officially-supported way to read plan usage from a hook or the CLI.
+Every Anthropic feature request for one is closed as not-planned/stale. The
+community-standard workaround (used by claude-usage-widget, herdr-agent-usage,
+ohugonnot/claude-code-statusline, etc.) is to read the undocumented cache field
+`cachedUsageUtilization` that Claude Code persists in ~/.claude.json. This script
+does that. It is UNSUPPORTED and MAY BREAK on a Claude Code update — which is why
+the SessionStart self-check fails LOUD the moment the shape changes, so we know.
+
+VERIFIED FACT (2026-09-04): the cache goes stale. It read 4% while a live
+`claude -p /usage` probe showed 42%, and Claude Code did not refresh it once
+during ~10 min of heavy work. So this script actively (and throttled) refreshes
+the cache by spawning a detached `claude -p /usage`, guarded against recursion.
+
+MODES (pick with --mode)
+------------------------
+  statusline  -> one compact status-bar line (reads stdin JSON, merges live rate_limits)
+  gate        -> PreToolUse: HARD-DENY tool calls at/above BLOCK_PCT, warn at WARN_PCT
+  context     -> UserPromptSubmit: inject a one-line usage status into the turn
+  selfcheck   -> SessionStart: validate the cache shape, fail LOUD if broken
+  dump        -> print the parsed reading as JSON (debugging / "know when it breaks")
+
+All hook modes FAIL OPEN (never brick the session): if usage data is missing or
+stale, they allow the action but say so loudly. Only a KNOWN reading at/above the
+block threshold denies a tool call.
+
+CONFIG: edit the constants block below. This is a local workstation script; per
+Matt's conventions it needs no lint/tests.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+# -----------------------------------------------------------------------------
+# CONFIG — tune these freely.
+# -----------------------------------------------------------------------------
+WARN_PCT = 85          # wind-down warning at/above this % of a plan window
+BLOCK_PCT = 97         # HARD-DENY tool calls at/above this % (protects against runaway)
+REFRESH_AFTER_MIN = 5  # refresh the cache when it is older than this (active work only)
+STALE_LOUD_MIN = 20    # if the reading is older than this, announce it loudly
+WARN_THROTTLE_MIN = 3  # do not repeat the warn banner more often than this
+
+HOME = os.path.expanduser("~")
+CLAUDE_JSON = os.path.join(HOME, ".claude.json")
+STATE_DIR = os.path.join(HOME, ".claude", ".usage-tripwire")
+REFRESH_MARKER = os.path.join(STATE_DIR, "last-refresh")
+WARN_MARKER = os.path.join(STATE_DIR, "last-warn")
+STATE_FILE = os.path.join(STATE_DIR, "state.json")
+LOG_FILE = os.path.join(STATE_DIR, "tripwire.log")
+
+# Set in the environment of the spawned `claude -p /usage` refresh so every hook
+# in that child session no-ops instead of recursing.
+RECURSION_ENV = "CLAUDE_USAGE_TRIPWIRE_REFRESH"
+
+# ANSI colors for the status line.
+C_GREEN = "\033[32m"
+C_YELLOW = "\033[33m"
+C_RED = "\033[31m"
+C_DIM = "\033[2m"
+C_RESET = "\033[0m"
+
+
+# -----------------------------------------------------------------------------
+# Small helpers
+# -----------------------------------------------------------------------------
+def _log(msg: str) -> None:
+    """Append a debug line. Best-effort; never raises."""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(LOG_FILE, "a") as fh:
+            fh.write(f"{datetime.now().isoformat(timespec='seconds')} {msg}\n")
+    except Exception:
+        pass
+
+
+def _marker_age_min(path: str) -> float:
+    """Age of a marker file in minutes, or a large number if it does not exist."""
+    try:
+        return (time.time() - os.path.getmtime(path)) / 60.0
+    except Exception:
+        return 1e9
+
+
+def _touch(path: str) -> None:
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass
+
+
+def _parse_iso(s):
+    """Parse an ISO-8601 timestamp (with tz) to an aware datetime, or None."""
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _fmt_reset(dt) -> str:
+    """Human 'resets 7:59pm' style in local time; '' if unknown."""
+    if dt is None:
+        return ""
+    try:
+        local = dt.astimezone()
+        return local.strftime("%-I:%M%p").lower()
+    except Exception:
+        return ""
+
+
+def _pct_color(pct) -> str:
+    if pct is None:
+        return C_DIM
+    if pct >= BLOCK_PCT:
+        return C_RED
+    if pct >= WARN_PCT:
+        return C_YELLOW
+    return C_GREEN
+
+
+# -----------------------------------------------------------------------------
+# Read + normalize the usage cache.
+# -----------------------------------------------------------------------------
+def read_usage(stdin_json: dict | None = None) -> dict:
+    """
+    Return a normalized reading dict. Never raises.
+
+    Keys:
+      ok            bool     — cache read + minimally-valid shape
+      error         str|None — why not ok
+      age_min       float|None — how old the cache reading is
+      stale         bool     — age_min > STALE_LOUD_MIN
+      session_pct / session_reset (datetime|None)
+      week_pct / week_reset
+      worst_pct     max(session, week) used for gating
+      credits_enabled / credits_used / credits_limit / credits_ccy / credits_dp
+      spend_limit_reached
+      source        'stdin+cache' | 'cache' | None
+    """
+    r = {
+        "ok": False, "error": None, "age_min": None, "stale": True,
+        "session_pct": None, "session_reset": None,
+        "week_pct": None, "week_reset": None, "worst_pct": None,
+        "credits_enabled": None, "credits_used": None, "credits_limit": None,
+        "credits_ccy": "USD", "credits_dp": 2, "spend_limit_reached": None,
+        "source": None,
+    }
+
+    # --- cache (~/.claude.json) ---
+    try:
+        with open(CLAUDE_JSON) as fh:
+            doc = json.load(fh)
+    except Exception as e:
+        r["error"] = f"cannot read {CLAUDE_JSON}: {e}"
+        return r
+
+    cu = doc.get("cachedUsageUtilization")
+    if not isinstance(cu, dict):
+        r["error"] = "cachedUsageUtilization missing (Claude Code format changed?)"
+        return r
+
+    util = cu.get("utilization")
+    if not isinstance(util, dict):
+        r["error"] = "cachedUsageUtilization.utilization missing (format changed?)"
+        return r
+
+    fetched_ms = cu.get("fetchedAtMs")
+    if isinstance(fetched_ms, (int, float)):
+        r["age_min"] = (time.time() * 1000 - fetched_ms) / 60000.0
+
+    fh_win = util.get("five_hour") or {}
+    sd_win = util.get("seven_day") or {}
+    if isinstance(fh_win, dict):
+        r["session_pct"] = fh_win.get("utilization")
+        r["session_reset"] = _parse_iso(fh_win.get("resets_at"))
+    if isinstance(sd_win, dict):
+        r["week_pct"] = sd_win.get("utilization")
+        r["week_reset"] = _parse_iso(sd_win.get("resets_at"))
+
+    ex = util.get("extra_usage") or {}
+    if isinstance(ex, dict):
+        r["credits_enabled"] = ex.get("is_enabled")
+        r["credits_used"] = ex.get("used_credits")
+        r["credits_limit"] = ex.get("monthly_limit")
+        r["credits_ccy"] = ex.get("currency", "USD")
+        r["credits_dp"] = ex.get("decimal_places", 2)
+        r["spend_limit_reached"] = ex.get("spend_limit_reached")
+
+    r["source"] = "cache"
+
+    # --- merge live stdin rate_limits (status line only), if valid & sane ---
+    # Live data appears only for some plans and only after the first API response.
+    # Guard the known epoch-leak bug (#52326): a used_percentage far above 100 is
+    # actually a leaked timestamp, so reject anything outside 0..100.
+    if stdin_json:
+        rl = stdin_json.get("rate_limits") or {}
+        fh_live = rl.get("five_hour") or {}
+        sd_live = rl.get("seven_day") or {}
+        up = fh_live.get("used_percentage")
+        if isinstance(up, (int, float)) and 0 <= up <= 100:
+            r["session_pct"] = up
+            ra = fh_live.get("resets_at")
+            if isinstance(ra, (int, float)):
+                r["session_reset"] = datetime.fromtimestamp(ra, tz=timezone.utc)
+            r["age_min"] = 0.0  # live
+            r["source"] = "stdin+cache"
+        wp = sd_live.get("used_percentage")
+        if isinstance(wp, (int, float)) and 0 <= wp <= 100:
+            r["week_pct"] = wp
+            ra = sd_live.get("resets_at")
+            if isinstance(ra, (int, float)):
+                r["week_reset"] = datetime.fromtimestamp(ra, tz=timezone.utc)
+
+    # worst window drives gating
+    cands = [p for p in (r["session_pct"], r["week_pct"]) if isinstance(p, (int, float))]
+    r["worst_pct"] = max(cands) if cands else None
+
+    r["stale"] = (r["age_min"] is None) or (r["age_min"] > STALE_LOUD_MIN)
+    r["ok"] = r["worst_pct"] is not None
+    if not r["ok"] and r["error"] is None:
+        r["error"] = "no session/weekly utilization values found (format changed?)"
+
+    # best-effort shared state file for observability/debugging
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        snap = dict(r)
+        snap["session_reset"] = _fmt_reset(r["session_reset"])
+        snap["week_reset"] = _fmt_reset(r["week_reset"])
+        snap["written_at"] = datetime.now().isoformat(timespec="seconds")
+        with open(STATE_FILE, "w") as fh:
+            json.dump(snap, fh, indent=2)
+    except Exception:
+        pass
+
+    return r
+
+
+def credits_str(r: dict) -> str:
+    """'$4.71/$150' style, or '' if unknown."""
+    used, lim, dp = r.get("credits_used"), r.get("credits_limit"), r.get("credits_dp") or 2
+    if not isinstance(used, (int, float)) or not isinstance(lim, (int, float)):
+        return ""
+    div = 10 ** dp
+    sign = "$" if (r.get("credits_ccy") == "USD") else ""
+    return f"{sign}{used/div:.2f}/{sign}{lim/div:.0f}"
+
+
+# -----------------------------------------------------------------------------
+# Active, throttled, recursion-safe refresh of the cache.
+# -----------------------------------------------------------------------------
+def maybe_refresh(reading: dict) -> None:
+    """Spawn a detached `claude -p /usage` to refresh the cache, if warranted."""
+    if os.environ.get(RECURSION_ENV) == "1":
+        return  # we ARE the refresh child; do nothing
+    age = reading.get("age_min")
+    fresh_enough = isinstance(age, (int, float)) and age <= REFRESH_AFTER_MIN
+    if fresh_enough:
+        return
+    if _marker_age_min(REFRESH_MARKER) <= REFRESH_AFTER_MIN:
+        return  # a refresh was already kicked off recently
+    _touch(REFRESH_MARKER)  # claim the slot before spawning (avoids thundering herd)
+
+    claude = shutil.which("claude")
+    if not claude:
+        for cand in ("/opt/homebrew/bin/claude", os.path.join(HOME, ".claude/local/claude")):
+            if os.path.exists(cand):
+                claude = cand
+                break
+    if not claude:
+        _log("refresh skipped: claude binary not found on PATH")
+        return
+
+    env = os.environ.copy()
+    env[RECURSION_ENV] = "1"
+    try:
+        subprocess.Popen(
+            [claude, "-p", "/usage"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
+        _log(f"refresh spawned (age={age})")
+    except Exception as e:
+        _log(f"refresh spawn failed: {e}")
+
+
+# -----------------------------------------------------------------------------
+# Output helpers for hook JSON.
+# -----------------------------------------------------------------------------
+def emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj))
+    sys.stdout.flush()
+
+
+def status_sentence(r: dict) -> str:
+    """One-line plain-text status used inside injected context."""
+    parts = []
+    if isinstance(r["session_pct"], (int, float)):
+        rs = _fmt_reset(r["session_reset"])
+        parts.append(f"session {r['session_pct']:.0f}%" + (f" (resets {rs})" if rs else ""))
+    if isinstance(r["week_pct"], (int, float)):
+        parts.append(f"week {r['week_pct']:.0f}%")
+    cs = credits_str(r)
+    if cs:
+        state = "ENABLED" if r.get("credits_enabled") else "off"
+        parts.append(f"extra-usage credits {state} ({cs} used)")
+    age = r.get("age_min")
+    if isinstance(age, (int, float)):
+        parts.append(f"data {age:.0f}m old")
+    return "Plan usage: " + ", ".join(parts) if parts else "Plan usage: unavailable"
+
+
+# Checkpoint actions allowed to pass EVEN in the block state, so a final
+# commit/memory write is always possible before stopping.
+def is_checkpoint_action(stdin_json: dict) -> bool:
+    tool = stdin_json.get("tool_name", "")
+    ti = stdin_json.get("tool_input", {}) or {}
+    if tool == "Bash":
+        cmd = (ti.get("command") or "").strip()
+        return cmd.startswith(("git add", "git commit", "git stash"))
+    if tool in ("Write", "Edit", "NotebookEdit"):
+        fp = ti.get("file_path") or ti.get("notebook_path") or ""
+        return ("/memory/" in fp) or ("/scratchpad" in fp) or fp.endswith("MEMORY.md")
+    return False
+
+
+# -----------------------------------------------------------------------------
+# Modes
+# -----------------------------------------------------------------------------
+def mode_statusline(stdin_json):
+    r = read_usage(stdin_json)
+    maybe_refresh(r)
+
+    model = ""
+    branch = ""
+    try:
+        model = (stdin_json.get("model") or {}).get("display_name", "") if stdin_json else ""
+    except Exception:
+        pass
+    try:
+        cwd = (stdin_json or {}).get("cwd") or (stdin_json or {}).get("workspace", {}).get("current_dir")
+        if cwd:
+            gitpath = os.path.join(cwd, ".git")
+            gitdir = gitpath
+            # A worktree/submodule has .git as a FILE containing "gitdir: <path>".
+            if os.path.isfile(gitpath):
+                with open(gitpath) as fh:
+                    line = fh.read().strip()
+                if line.startswith("gitdir:"):
+                    gitdir = line.split(":", 1)[1].strip()
+            head = os.path.join(gitdir, "HEAD")
+            if os.path.exists(head):
+                with open(head) as fh:
+                    ref = fh.read().strip()
+                branch = ref.split("/")[-1] if ref.startswith("ref:") else ref[:7]
+    except Exception:
+        pass
+
+    if not r["ok"]:
+        line = f"{C_RED}⛽ usage: unavailable{C_RESET} {C_DIM}(guard blind — see tripwire.log){C_RESET}"
+    else:
+        col = _pct_color(r["worst_pct"])
+        s = f"{r['session_pct']:.0f}%" if isinstance(r["session_pct"], (int, float)) else "?"
+        rs = _fmt_reset(r["session_reset"])
+        w = f"{r['week_pct']:.0f}%" if isinstance(r["week_pct"], (int, float)) else "?"
+        seg = f"{col}⛽ S:{s}{C_RESET}"
+        if rs:
+            seg += f"{C_DIM}⟲{rs}{C_RESET}"
+        seg += f"  W:{w}"
+        cs = credits_str(r)
+        if cs:
+            cc = C_RED if r.get("credits_enabled") else C_DIM
+            seg += f"  {cc}💳{cs}{C_RESET}"
+        if r.get("stale"):
+            seg += f"  {C_YELLOW}⚠stale {r['age_min']:.0f}m{C_RESET}"
+        line = seg
+
+    prefix = ""
+    if model:
+        prefix += f"{C_DIM}{model}{C_RESET} "
+    if branch:
+        prefix += f"{C_DIM}({branch}){C_RESET} "
+    sys.stdout.write(prefix + line)
+
+
+def mode_gate(stdin_json):
+    if os.environ.get(RECURSION_ENV) == "1":
+        emit({})
+        return
+    r = read_usage(stdin_json)
+    maybe_refresh(r)
+
+    # Unknown / stale-loud: FAIL OPEN, but say so (throttled) so we know it's blind.
+    if not r["ok"] or r["stale"]:
+        if _marker_age_min(WARN_MARKER) > WARN_THROTTLE_MIN:
+            _touch(WARN_MARKER)
+            why = r["error"] or f"usage data is {r['age_min']:.0f}m old"
+            emit({
+                "systemMessage": f"⚠ usage-tripwire is blind: {why}. Credit guard not guaranteed.",
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "additionalContext": (
+                        f"[usage-tripwire] Cannot confirm plan usage ({why}). "
+                        "Be conservative: avoid launching subagents/loops and checkpoint often "
+                        "until a fresh reading is available."
+                    ),
+                },
+            })
+        else:
+            emit({})
+        return
+
+    worst = r["worst_pct"]
+
+    # HARD BLOCK
+    if worst >= BLOCK_PCT:
+        if is_checkpoint_action(stdin_json):
+            emit({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": f"Checkpoint action allowed despite {worst:.0f}% usage.",
+                },
+                "systemMessage": f"⛔ {worst:.0f}% usage — allowing checkpoint only.",
+            })
+            return
+        rs = _fmt_reset(r["session_reset"]) or "reset time unknown"
+        cs = credits_str(r)
+        credit_note = ""
+        if r.get("credits_enabled"):
+            credit_note = f" Extra-usage credits are ENABLED ({cs} used), so continuing now would spend them."
+        emit({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    f"Plan usage at {worst:.0f}% (>= {BLOCK_PCT}% block threshold).{credit_note} "
+                    f"STOP: do not run more tool calls. Checkpoint (git commit) is still allowed. "
+                    f"Tell Matt where things stand and wait for the reset (~{rs}). "
+                    f"Only spend extra-usage credits with Matt's explicit per-instance approval."
+                ),
+            },
+            "systemMessage": f"⛔ usage-tripwire: {worst:.0f}% — tool calls blocked to protect extra-usage credits. Reset ~{rs}.",
+        })
+        return
+
+    # WARN
+    if worst >= WARN_PCT:
+        out = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": (
+                    f"[usage-tripwire] Plan usage {worst:.0f}% (warn at {WARN_PCT}%, hard-block at {BLOCK_PCT}%). "
+                    "Wind down: finish and commit current work, avoid new subagents/loops, "
+                    "and prepare to pause for the reset. Do not switch to extra-usage credits without Matt's OK."
+                ),
+            }
+        }
+        if _marker_age_min(WARN_MARKER) > WARN_THROTTLE_MIN:
+            _touch(WARN_MARKER)
+            rs = _fmt_reset(r["session_reset"])
+            out["systemMessage"] = f"⚠ usage-tripwire: {worst:.0f}% of your plan window used" + (f" (resets {rs})" if rs else "") + " — winding down."
+        emit(out)
+        return
+
+    emit({})  # healthy: silent allow
+
+
+def mode_context(stdin_json):
+    if os.environ.get(RECURSION_ENV) == "1":
+        emit({})
+        return
+    r = read_usage(stdin_json)
+    maybe_refresh(r)
+
+    ctx = "[usage-tripwire] " + status_sentence(r) + "."
+    if not r["ok"] or r["stale"]:
+        ctx += " (Reading is unavailable or stale — guard cannot be guaranteed; be conservative.)"
+    elif r["worst_pct"] >= BLOCK_PCT:
+        ctx += f" AT/OVER the {BLOCK_PCT}% hard stop — do not start new work; checkpoint and wait for reset."
+    elif r["worst_pct"] >= WARN_PCT:
+        ctx += f" Over the {WARN_PCT}% warn line — wind down and avoid subagents/loops."
+    ctx += " Never spend extra-usage credits without Matt's explicit per-instance approval."
+
+    emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}})
+
+
+def mode_selfcheck(stdin_json):
+    if os.environ.get(RECURSION_ENV) == "1":
+        emit({})
+        return
+    r = read_usage(stdin_json)
+    maybe_refresh(r)
+
+    if not r["ok"]:
+        # LOUD: this is the "know when it breaks" tripwire.
+        emit({
+            "systemMessage": (
+                f"⚠⚠ usage-tripwire SELF-CHECK FAILED: {r['error']}. "
+                "The extra-usage credit guard is NOT protecting this session. "
+                "Likely a Claude Code format change. Fix ~/.claude/scripts/usage_tripwire.py "
+                "(see ~/.claude/.usage-tripwire/tripwire.log)."
+            ),
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": (
+                    "[usage-tripwire] SELF-CHECK FAILED — plan-usage reading unavailable. "
+                    f"Reason: {r['error']}. Treat the credit guard as OFF: be conservative with "
+                    "subagents/loops and confirm with Matt before anything that could spend extra-usage credits."
+                ),
+            },
+        })
+        return
+
+    note = "[usage-tripwire] Active (warn %d%%, hard-block %d%%). %s" % (
+        WARN_PCT, BLOCK_PCT, status_sentence(r),
+    )
+    if r["stale"]:
+        note += " NOTE: reading is stale; a background refresh was requested."
+    emit({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": note}})
+
+
+def mode_dump(stdin_json):
+    r = read_usage(stdin_json)
+    out = dict(r)
+    out["session_reset"] = _fmt_reset(r["session_reset"])
+    out["week_reset"] = _fmt_reset(r["week_reset"])
+    out["credits_str"] = credits_str(r)
+    print(json.dumps(out, indent=2))
+
+
+# -----------------------------------------------------------------------------
+# Entry
+# -----------------------------------------------------------------------------
+def main() -> int:
+    mode = "dump"
+    argv = sys.argv[1:]
+    if "--mode" in argv:
+        i = argv.index("--mode")
+        if i + 1 < len(argv):
+            mode = argv[i + 1]
+    elif argv:
+        mode = argv[0]
+
+    stdin_json = None
+    if not sys.stdin.isatty():
+        try:
+            raw = sys.stdin.read()
+            if raw.strip():
+                stdin_json = json.loads(raw)
+        except Exception:
+            stdin_json = None
+
+    dispatch = {
+        "statusline": mode_statusline,
+        "gate": mode_gate,
+        "context": mode_context,
+        "selfcheck": mode_selfcheck,
+        "dump": mode_dump,
+    }
+    fn = dispatch.get(mode)
+    if not fn:
+        sys.stderr.write(f"unknown mode: {mode}\n")
+        return 0  # never fail a hook on our own arg error
+
+    try:
+        fn(stdin_json)
+    except Exception as e:
+        # Absolute backstop: a crashing hook must not brick Claude Code.
+        _log(f"mode {mode} crashed: {e}")
+        try:
+            if mode == "statusline":
+                sys.stdout.write(f"{C_RED}⛽ usage: guard error{C_RESET}")
+            else:
+                emit({"systemMessage": f"⚠ usage-tripwire {mode} crashed: {e}"})
+        except Exception:
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

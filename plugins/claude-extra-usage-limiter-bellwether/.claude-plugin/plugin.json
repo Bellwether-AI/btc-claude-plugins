@@ -1,0 +1,8 @@
+{
+  "name": "claude-extra-usage-limiter-bellwether",
+  "version": "1.0.0",
+  "description": "Guards a Claude subscription against pay-as-you-go extra-usage credits. Watches the 5-hour and 7-day plan windows, tells Claude to wind down and checkpoint at 85%, and hard-denies tool calls at 97% (git commit and memory writes stay allowed). Status line shows live usage. Fails open but loud if Claude Code's usage cache changes shape.",
+  "author": {
+    "name": "Bellwether AI"
+  }
+}
