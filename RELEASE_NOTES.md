@@ -1,5 +1,58 @@
 # Release Notes
 
+## claude-extra-usage-limiter-bellwether v1.0.0
+
+### What's New
+
+**A guard against surprise extra-usage charges.** On a Claude Teams plan, extra-usage credits
+(pay-as-you-go overage) are an organization setting a member cannot switch off, and Claude Code
+keeps working on credits the moment a usage window hits 100%. This plugin watches the 5-hour
+and 7-day plan windows locally and steps in first: at 85% it tells Claude to wind down, commit,
+and stop launching subagents; at 97% it denies tool calls so work physically stops until the
+window resets. A plain `git commit`, a memory or scratchpad write, and the plugin's own status
+probe are never denied, so a final checkpoint is always possible.
+
+**Live usage in your status line.** After running the `setup` skill you see
+`⛽ S:14%⟲1:20pm  W:51%  💳$4.71/$150`: session window with reset time, weekly window, and
+extra-usage credits used this month (red when credits are enabled). Each prompt also carries a
+one-line reading so Claude knows the number without guessing.
+
+**Install in three commands.**
+
+```
+/plugin marketplace add Bellwether-AI/btc-claude-plugins
+/plugin install claude-extra-usage-limiter-bellwether@btc-claude-plugins
+/claude-extra-usage-limiter-bellwether:setup
+```
+
+The hooks work as soon as the plugin is enabled. `setup` installs the status line (after backing
+up your settings), offers to remove any hand-wired copy of the same guard so banners do not show
+twice, writes a config file where you can change the thresholds, and offers to add a short
+policy section to your global CLAUDE.md.
+
+### Behavior to Know About
+
+- **It fails open, loudly.** The plugin reads an undocumented Claude Code cache because no
+  supported API exists. If a Claude Code update changes that cache, session start prints a
+  self-check failure, the status line shows `usage: unavailable`, and every tool call is allowed
+  with a "guard is blind" note. A tool call is denied only on a known reading in 0–100 at or
+  above the block threshold. Nothing this plugin does can lock you out of a session.
+- **Checkpoints are not force-approved.** They are simply not blocked; your normal permission
+  prompts still apply. A chained command such as `git commit -m x && something-else` is not a
+  checkpoint and is denied at 97%.
+- **It stops Claude Code, not billing.** The only hard financial control on a Teams plan is a
+  per-member monthly spend limit set by an org Owner. Ask for one.
+
+### Known Limitations
+
+- API-key sessions have no plan windows; the self-check says so and the plugin does nothing.
+- The status line command uses POSIX shell syntax. On Windows it needs Git Bash; the hooks
+  themselves only need `python3` on the PATH.
+- The gate adds about 30–50 ms to each tool call.
+- Cache freshness depends on a background `claude -p /usage` refresh at most every 5 minutes
+  during active work. Between refreshes the reading can lag real usage by a few percent.
+
+
 ## co-dwerker v1.0.0
 
 ### What's New
