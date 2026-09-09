@@ -1,0 +1,5 @@
+{
+  "type": "command",
+  "command": "python3 \"$(cat ~/.claude/.claude-extra-usage-limiter/plugin-root 2>/dev/null)/scripts/usage_limiter.py\" --mode statusline 2>/dev/null || printf '⛽ usage: run /claude-extra-usage-limiter-bellwether:setup'",
+  "refreshInterval": 30
+}
