@@ -2,7 +2,7 @@
 name: setup
 description: Use when the user asks to install, configure, or repair the extra-usage limiter status line or hooks — "set up the usage limiter", "install the usage status line", "the usage gauge is missing", "finish installing the limiter" — or right after installing the plugin.
 disable-model-invocation: true
-allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/usage_limiter.py *), Bash(jq *), Bash(cp ~/.claude/settings.json *), Bash(mv ~/.claude/settings.json.tmp *), Bash(mkdir -p ~/.claude/.claude-extra-usage-limiter), Bash(printf *), Bash(grep *), Bash(cat *), Bash(date *), Bash(test *), Read, AskUserQuestion
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/usage_limiter.py" --mode dump), Bash(jq * ~/.claude/settings.json), Bash(jq * ~/.claude/settings.json > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json), Bash(cp ~/.claude/settings.json ~/.claude/settings.json.bak-*), Bash(mkdir -p ~/.claude/.claude-extra-usage-limiter), Bash(printf '%s' "${CLAUDE_PLUGIN_ROOT}" > ~/.claude/.claude-extra-usage-limiter/plugin-root), Bash(test -f ~/.claude/claude-extra-usage-limiter.json || printf * > ~/.claude/claude-extra-usage-limiter.json), Bash(grep -q claude-extra-usage-limiter:begin ~/.claude/CLAUDE.md*), Bash(cat "${CLAUDE_PLUGIN_ROOT}/references/claude-md-snippet.md" >> ~/.claude/CLAUDE.md), Read, AskUserQuestion
 ---
 
 # Extra-Usage Limiter: Setup
@@ -12,14 +12,16 @@ active the moment the plugin is enabled. Two things a plugin cannot do for the u
 here: install the **status line** and remove any **hand-wired copies** of the same hooks so
 nothing fires twice. Everything below edits only `~/.claude/settings.json`,
 `~/.claude/claude-extra-usage-limiter.json`, the pointer file, and (with consent) `~/.claude/CLAUDE.md`.
-Never touch `permissions`, other hooks, or any other key.
+Never touch `permissions`, other hooks, or any other key. Always quote `"${CLAUDE_PLUGIN_ROOT}"`;
+home directories with spaces are common.
 
-Run the steps in order. Print each command's result briefly. Stop at the first failure.
+Run the steps in order. Print each command's result briefly. If a command fails, stop, show
+the error, and tell the user which steps completed and how to roll back (Step 8).
 
 ## Step 1 — Confirm the guard can see plan usage
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/usage_limiter.py --mode dump
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/usage_limiter.py" --mode dump
 ```
 
 If `"ok": false`, stop and explain the `error` field. Two common causes: the session is signed
@@ -33,8 +35,8 @@ an update; point the user at the README's "When it breaks" section). Do not cont
 cp ~/.claude/settings.json ~/.claude/settings.json.bak-$(date +%Y%m%d-%H%M%S)
 ```
 
-If `~/.claude/settings.json` does not exist, create it as `{}` first. Remember the backup
-filename for Step 7.
+If `~/.claude/settings.json` does not exist, tell the user to create it containing `{}` and
+re-run setup; do not create it yourself. Remember the backup filename for Step 8.
 
 ## Step 3 — Install the status line
 
@@ -48,13 +50,14 @@ jq '.statusLine' ~/.claude/settings.json
   (or refresh) it without asking.
 - Otherwise a different status line is configured. Show it to the user and use
   `AskUserQuestion` with two options: **Replace it with the usage gauge (Recommended)** and
-  **Keep my current status line**. If they keep theirs, skip to Step 4 and note in Step 7 that
+  **Keep my current status line**. If they keep theirs, skip to Step 4 and note in Step 8 that
   the gauge was not installed.
 
-Install by merging the shipped fragment (this preserves every other key in the file):
+Install by merging the shipped fragment (this preserves every other key in the file; if `jq`
+fails the `mv` does not run, so the original is never replaced by a broken file):
 
 ```bash
-jq --slurpfile sl ${CLAUDE_PLUGIN_ROOT}/references/statusline.json '.statusLine = $sl[0]' ~/.claude/settings.json > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
+jq --slurpfile sl "${CLAUDE_PLUGIN_ROOT}/references/statusline.json" '.statusLine = $sl[0]' ~/.claude/settings.json > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
 ```
 
 ## Step 4 — Seed the pointer file
@@ -71,10 +74,11 @@ printf '%s' "${CLAUDE_PLUGIN_ROOT}" > ~/.claude/.claude-extra-usage-limiter/plug
 ## Step 5 — Remove hand-wired copies of the hooks
 
 Earlier versions of this guard were installed by hand as `usage_tripwire.py` hook entries. If
-both those and the plugin's hooks run, every banner appears twice. List them:
+both those and the plugin's hooks run, every banner appears twice. List them (tolerant of any
+hook shape):
 
 ```bash
-jq '[.hooks // {} | to_entries[] | .key as $ev | .value[] | .hooks[]? | select((.command // "") | test("usage_tripwire")) | $ev] | unique' ~/.claude/settings.json
+jq '[.hooks // {} | to_entries[] | .key as $ev | (.value | if type == "array" then .[] else empty end) | (.hooks // [] | .[]?) | select((.command // "") | test("usage_tripwire")) | $ev] | unique' ~/.claude/settings.json
 ```
 
 If the result is `[]`, say so and continue. Otherwise show the events found and use
@@ -82,7 +86,7 @@ If the result is `[]`, say so and continue. Otherwise show the events found and 
 clean up myself**. On yes:
 
 ```bash
-jq 'if .hooks == null then . else .hooks |= with_entries(.value |= map(.hooks |= map(select(((.command // "") | test("usage_tripwire")) | not)) | select(.hooks | length > 0)) | select(.value | length > 0)) end' ~/.claude/settings.json > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
+jq 'if (.hooks | type) != "object" then . else .hooks |= with_entries(.value |= (if type == "array" then map(if (.hooks | type) == "array" then .hooks |= map(select(((.command // "") | test("usage_tripwire")) | not)) else . end | select((.hooks // [1]) | length > 0)) else . end) | select((.value | type) != "array" or (.value | length) > 0)) end' ~/.claude/settings.json > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
 ```
 
 Then re-run the listing command and confirm it prints `[]`. Do not delete
@@ -102,7 +106,7 @@ Tell the user this file is where thresholds live and that changes apply on the n
 Check for the marker:
 
 ```bash
-grep -q 'claude-extra-usage-limiter:begin' ~/.claude/CLAUDE.md 2>/dev/null && echo present || echo absent
+grep -q claude-extra-usage-limiter:begin ~/.claude/CLAUDE.md 2>/dev/null && echo present || echo absent
 ```
 
 If absent, explain that the hooks already inject a one-line policy each turn, but a standing
@@ -111,7 +115,7 @@ use `AskUserQuestion`: **Append the policy section to ~/.claude/CLAUDE.md (Recom
 **Skip**. On yes:
 
 ```bash
-cat ${CLAUDE_PLUGIN_ROOT}/references/claude-md-snippet.md >> ~/.claude/CLAUDE.md
+cat "${CLAUDE_PLUGIN_ROOT}/references/claude-md-snippet.md" >> ~/.claude/CLAUDE.md
 ```
 
 ## Step 8 — Report
@@ -121,3 +125,7 @@ Print, in plain language: the backup filename and the rollback command
 hooks were removed, the config file path, and whether CLAUDE.md was updated. Finish with a
 one-line reading from `--mode dump` (session %, week %, credits state). Claude Code reloads
 settings.json on its own; no restart is needed.
+
+Windows note: the status line command uses POSIX shell syntax and runs under Git Bash when
+present. On a Windows machine without Git Bash, install it or skip Step 3; the hooks themselves
+still work as long as `python3` is on the PATH.

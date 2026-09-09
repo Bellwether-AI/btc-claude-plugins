@@ -1,17 +1,18 @@
 ---
 name: status
 description: Use when the user asks how much of their Claude plan usage is left, when the session window resets, whether extra-usage credits are at risk, or whether the usage limiter is working — "usage status", "how close am I to the limit", "is the limiter running", "why did my tool call get blocked".
-allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/usage_limiter.py *), Bash(cat ~/.claude/.claude-extra-usage-limiter/*), Bash(tail *), Bash(jq *)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/usage_limiter.py" --mode dump), Bash(cat ~/.claude/.claude-extra-usage-limiter/state.json), Bash(tail -20 ~/.claude/.claude-extra-usage-limiter/limiter.log), Bash(jq '.cachedUsageUtilization.utilization | keys' ~/.claude.json)
 ---
 
 # Extra-Usage Limiter: Status
 
-Answer from the guard's own reading, never from memory of an earlier turn.
+Answer from the guard's own reading, never from memory of an earlier turn. This probe is
+exempt from the block, so it works even when every other tool call is being denied.
 
 ## 1. Read
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/usage_limiter.py --mode dump
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/usage_limiter.py" --mode dump
 ```
 
 ## 2. Report

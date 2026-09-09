@@ -74,6 +74,7 @@ CONFIG_FILE = os.environ.get("CEUL_CONFIG") or os.path.join(
 )
 REFRESH_MARKER = os.path.join(STATE_DIR, "last-refresh")
 WARN_MARKER = os.path.join(STATE_DIR, "last-warn")
+BLIND_MARKER = os.path.join(STATE_DIR, "last-blind")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 LOG_FILE = os.path.join(STATE_DIR, "limiter.log")
 PLUGIN_ROOT_FILE = os.path.join(STATE_DIR, "plugin-root")
@@ -82,7 +83,9 @@ PLUGIN_ROOT_FILE = os.path.join(STATE_DIR, "plugin-root")
 # in that child session no-ops instead of recursing.
 RECURSION_ENV = "CLAUDE_EXTRA_USAGE_LIMITER_REFRESH"
 
-SETUP_COMMAND = "/claude-extra-usage-limiter-bellwether:setup"
+# Shell metacharacters that turn a "git commit ..." into something else entirely.
+# A checkpoint command containing any of these is NOT treated as a checkpoint.
+SHELL_CHAIN_CHARS = ("&&", "||", ";", "|", "`", "$(", "\n", ">", "<")
 
 # ANSI colors for the status line.
 C_GREEN = "\033[32m"
@@ -125,6 +128,11 @@ def load_config() -> dict:
             cfg[key] = val
         elif key in user:
             _log(f"config key {key!r} ignored: {val!r}")
+    # A zero refresh interval would spawn `claude -p /usage` on every hook call.
+    for key in ("refresh_after_min", "stale_loud_min", "warn_throttle_min"):
+        if cfg[key] < 1:
+            _log(f"config key {key!r} below 1 ignored: {cfg[key]!r}")
+            cfg[key] = DEFAULTS[key]
     if not cfg["warn_pct"] < cfg["block_pct"]:
         _log("config ignored: warn_pct must be < block_pct; using defaults for both")
         cfg["warn_pct"], cfg["block_pct"] = DEFAULTS["warn_pct"], DEFAULTS["block_pct"]
@@ -183,7 +191,22 @@ def _pct_color(pct) -> str:
 
 
 def _is_num(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v  # nan != nan
+
+
+def _pct(v):
+    """A percentage is only KNOWN if it is a finite number in 0..100; anything else is None.
+
+    Claude Code has leaked epoch timestamps into percentage fields before. Treating such a
+    value as a real reading would hard-deny every tool call, so it is rejected here and the
+    reading falls through to the loud fail-open path instead.
+    """
+    return v if (_is_num(v) and 0 <= v <= 100) else None
+
+
+def _age_str(r: dict) -> str:
+    age = r.get("age_min")
+    return f"usage data is {age:.0f}m old" if _is_num(age) else "usage timestamp missing"
 
 
 # -----------------------------------------------------------------------------
@@ -231,6 +254,9 @@ def read_usage(stdin_json: dict | None = None) -> dict:
     except Exception as e:
         r["error"] = f"cannot read {CLAUDE_JSON}: {e}"
         return r
+    if not isinstance(doc, dict):
+        r["error"] = f"{CLAUDE_JSON} is not a JSON object (format changed?)"
+        return r
 
     cu = doc.get("cachedUsageUtilization")
     if not isinstance(cu, dict):
@@ -249,10 +275,10 @@ def read_usage(stdin_json: dict | None = None) -> dict:
     fh_win = util.get("five_hour") or {}
     sd_win = util.get("seven_day") or {}
     if isinstance(fh_win, dict):
-        r["session_pct"] = fh_win.get("utilization")
+        r["session_pct"] = _pct(fh_win.get("utilization"))
         r["session_reset"] = _parse_iso(fh_win.get("resets_at"))
     if isinstance(sd_win, dict):
-        r["week_pct"] = sd_win.get("utilization")
+        r["week_pct"] = _pct(sd_win.get("utilization"))
         r["week_reset"] = _parse_iso(sd_win.get("resets_at"))
 
     ex = util.get("extra_usage") or {}
@@ -268,22 +294,24 @@ def read_usage(stdin_json: dict | None = None) -> dict:
 
     # --- merge live stdin rate_limits (status line only), if valid & sane ---
     # Live data appears only for some plans and only after the first API response.
-    # Guard the known epoch-leak bug: a used_percentage far above 100 is actually a
-    # leaked timestamp, so reject anything outside 0..100.
-    if stdin_json:
-        rl = stdin_json.get("rate_limits") or {}
-        fh_live = rl.get("five_hour") or {}
-        sd_live = rl.get("seven_day") or {}
-        up = fh_live.get("used_percentage")
-        if _is_num(up) and 0 <= up <= 100:
+    # _pct() rejects the known epoch-leak bug (a used_percentage far above 100).
+    if isinstance(stdin_json, dict):
+        rl = stdin_json.get("rate_limits")
+        rl = rl if isinstance(rl, dict) else {}
+        fh_live = rl.get("five_hour")
+        fh_live = fh_live if isinstance(fh_live, dict) else {}
+        sd_live = rl.get("seven_day")
+        sd_live = sd_live if isinstance(sd_live, dict) else {}
+        up = _pct(fh_live.get("used_percentage"))
+        if up is not None:
             r["session_pct"] = up
             ra = fh_live.get("resets_at")
             if _is_num(ra):
                 r["session_reset"] = datetime.fromtimestamp(ra, tz=timezone.utc)
             r["age_min"] = 0.0  # live
             r["source"] = "stdin+cache"
-        wp = sd_live.get("used_percentage")
-        if _is_num(wp) and 0 <= wp <= 100:
+        wp = _pct(sd_live.get("used_percentage"))
+        if wp is not None:
             r["week_pct"] = wp
             ra = sd_live.get("resets_at")
             if _is_num(ra):
@@ -296,7 +324,7 @@ def read_usage(stdin_json: dict | None = None) -> dict:
     r["stale"] = (r["age_min"] is None) or (r["age_min"] > CFG["stale_loud_min"])
     r["ok"] = r["worst_pct"] is not None
     if not r["ok"] and r["error"] is None:
-        r["error"] = "no session/weekly utilization values found (format changed?)"
+        r["error"] = "no session/weekly utilization values in 0..100 found (format changed?)"
 
     # best-effort shared state file for observability/debugging
     try:
@@ -315,9 +343,10 @@ def read_usage(stdin_json: dict | None = None) -> dict:
 
 def credits_str(r: dict) -> str:
     """'$4.71/$150' style, or '' if unknown."""
-    used, lim, dp = r.get("credits_used"), r.get("credits_limit"), r.get("credits_dp") or 2
+    used, lim, dp = r.get("credits_used"), r.get("credits_limit"), r.get("credits_dp")
     if not _is_num(used) or not _is_num(lim):
         return ""
+    dp = int(dp) if (_is_num(dp) and 0 <= dp <= 10) else 2
     div = 10**dp
     sign = "$" if (r.get("credits_ccy") == "USD") else ""
     return f"{sign}{used / div:.2f}/{sign}{lim / div:.0f}"
@@ -390,17 +419,31 @@ def status_sentence(r: dict) -> str:
     return "Plan usage: " + ", ".join(parts) if parts else "Plan usage: unavailable"
 
 
-# Checkpoint actions allowed to pass EVEN in the block state, so a final
-# commit/memory write is always possible before stopping.
+# Checkpoint actions are NOT denied in the block state, so a final commit/memory
+# write is always possible before stopping. They are not force-allowed either:
+# the hook simply stays silent and the user's normal permission rules apply.
 def is_checkpoint_action(stdin_json: dict) -> bool:
+    if not isinstance(stdin_json, dict):
+        return False
     tool = stdin_json.get("tool_name", "")
-    ti = stdin_json.get("tool_input", {}) or {}
+    ti = stdin_json.get("tool_input")
+    ti = ti if isinstance(ti, dict) else {}
     if tool == "Bash":
-        cmd = (ti.get("command") or "").strip()
-        return cmd.startswith(("git add", "git commit", "git stash"))
+        cmd = ti.get("command")
+        cmd = cmd.strip() if isinstance(cmd, str) else ""
+        if any(ch in cmd for ch in SHELL_CHAIN_CHARS):
+            return False  # "git commit -m x && <anything>" is not a checkpoint
+        words = cmd.split()
+        if len(words) >= 2 and words[0] == "git" and words[1] in ("add", "commit", "stash"):
+            return True
+        # The plugin's own read-only status probe must work while blocked.
+        return "usage_limiter.py" in cmd and "--mode dump" in cmd
     if tool in ("Write", "Edit", "NotebookEdit"):
-        fp = ti.get("file_path") or ti.get("notebook_path") or ""
-        return ("/memory/" in fp) or ("/scratchpad" in fp) or fp.endswith("MEMORY.md")
+        fp = ti.get("file_path") or ti.get("notebook_path")
+        if not isinstance(fp, str):
+            return False
+        parts = fp.replace("\\", "/").split("/")
+        return "memory" in parts[:-1] or "scratchpad" in parts[:-1] or parts[-1] == "MEMORY.md"
     return False
 
 
@@ -469,7 +512,9 @@ def mode_statusline(stdin_json):
             cc = C_RED if r.get("credits_enabled") else C_DIM
             seg += f"  {cc}💳{cs}{C_RESET}"
         if r.get("stale"):
-            seg += f"  {C_YELLOW}⚠stale {r['age_min']:.0f}m{C_RESET}"
+            age = r.get("age_min")
+            age_txt = f"{age:.0f}m" if _is_num(age) else "?"
+            seg += f"  {C_YELLOW}⚠stale {age_txt}{C_RESET}"
         line = seg
 
     prefix = ""
@@ -491,9 +536,9 @@ def mode_gate(stdin_json):
 
     # Unknown / stale-loud: FAIL OPEN, but say so (throttled) so we know it's blind.
     if not r["ok"] or r["stale"]:
-        if _marker_age_min(WARN_MARKER) > CFG["warn_throttle_min"]:
-            _touch(WARN_MARKER)
-            why = r["error"] or f"usage data is {r['age_min']:.0f}m old"
+        if _marker_age_min(BLIND_MARKER) > CFG["warn_throttle_min"]:
+            _touch(BLIND_MARKER)
+            why = r["error"] or _age_str(r)
             emit(
                 {
                     "systemMessage": (
@@ -518,26 +563,28 @@ def mode_gate(stdin_json):
     # HARD BLOCK
     if worst >= block_pct:
         if is_checkpoint_action(stdin_json):
+            # No permissionDecision: the call goes through the user's normal permission
+            # flow. Only a systemMessage so the user sees why other calls are blocked.
             emit(
                 {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "allow",
-                        "permissionDecisionReason": (
-                            f"Checkpoint action allowed despite {worst:.0f}% usage."
-                        ),
-                    },
-                    "systemMessage": f"⛔ {worst:.0f}% usage — allowing checkpoint only.",
+                    "systemMessage": (
+                        f"⛔ {worst:.0f}% usage — checkpoint action not blocked; "
+                        "everything else is."
+                    )
                 }
             )
             return
         rs = _fmt_reset(r["session_reset"]) or "reset time unknown"
-        cs = credits_str(r)
         credit_note = ""
-        if r.get("credits_enabled"):
-            credit_note = (
-                f" Extra-usage credits are ENABLED ({cs} used), so continuing now would spend them."
-            )
+        try:
+            if r.get("credits_enabled"):
+                cs = credits_str(r)
+                credit_note = (
+                    f" Extra-usage credits are ENABLED ({cs} used), "
+                    "so continuing now would spend them."
+                )
+        except Exception as e:  # a display string must never cancel the deny
+            _log(f"credit note skipped: {e}")
         emit(
             {
                 "hookSpecificOutput": {
@@ -687,6 +734,8 @@ def main() -> int:
                 stdin_json = json.loads(raw)
         except Exception:
             stdin_json = None
+    if not isinstance(stdin_json, dict):
+        stdin_json = None  # a bare number/list/string on stdin is not hook input
 
     dispatch = {
         "statusline": mode_statusline,

@@ -16,12 +16,17 @@ It watches the 5-hour session window and the 7-day weekly window and acts on the
 | 85%–96% (**warn**) | status line yellow; Claude is told to wind down, commit, and avoid subagents/loops |
 | 97%+ (**block**) | status line red; the **PreToolUse hook denies tool calls**, so work physically stops |
 
-**Checkpoint escape hatch.** Even in the block state, `git add` / `git commit` / `git stash`
-and writes into a `memory/` or `scratchpad` path are still allowed, so a final checkpoint is
-always possible.
+**Checkpoint escape hatch.** Even in the block state, a plain `git add` / `git commit` /
+`git stash` command, a write to a file inside a `memory/` or `scratchpad/` directory or named
+`MEMORY.md`, and the plugin's own `--mode dump` probe are not denied, so a final checkpoint is
+always possible. "Plain" means no `&&`, `;`, `|`, backticks, or `$(...)`: a chained command is
+not a checkpoint. Checkpoints are not force-approved either; your normal permission rules
+still apply to them.
 
-**Fail-open by design.** If usage data is missing or stale, the guard *allows* the action but
-says so loudly. It never bricks a session.
+**Fail-open by design.** A tool call is denied only on a *known* reading: a finite number in
+0–100 at or above the block threshold. Missing data, a stale cache, a leaked timestamp or
+other garbage in the usage field, a malformed file, or a crash inside the hook all *allow* the
+action and say so loudly. It never bricks a session.
 
 ## Install
 
@@ -99,8 +104,9 @@ There is **no supported API** for plan usage in a hook or the CLI. The plugin re
 ```
 
 The status line also merges the documented live `rate_limits` object from its stdin JSON when
-present. A known Claude Code bug can leak an epoch timestamp into `used_percentage`; values
-outside 0–100 are rejected.
+present. Every percentage, from the cache or from stdin, is accepted only if it is a finite
+number in 0–100. A known Claude Code bug has leaked an epoch timestamp into `used_percentage`;
+such a value is treated as unknown, which makes the guard fail open rather than deny everything.
 
 That cache goes stale (observed: 4% cached while live usage was 42%, with no refresh during ten
 minutes of heavy work). So the plugin refreshes it by spawning a detached `claude -p /usage`, at
@@ -119,9 +125,11 @@ ever missing, the status line says `run /claude-extra-usage-limiter-bellwether:s
 
 ## When it breaks (it will)
 
-The data source is unsupported and can change in any Claude Code release. You will know
-immediately: **session start prints a loud self-check failure** and the status line shows
-`⛽ usage: unavailable`. Until fixed, hooks allow everything and say the guard is blind.
+The data source is unsupported and can change in any Claude Code release. If the percentages
+disappear or turn into something outside 0–100, **session start prints a loud self-check
+failure** and the status line shows `⛽ usage: unavailable`. If only the timestamp field
+disappears, the reading is reported as stale instead. In both cases hooks allow everything and
+say the guard is blind until the plugin is fixed.
 
 ```bash
 python3 <plugin-root>/scripts/usage_limiter.py --mode dump    # what parsed, what didn't
@@ -141,6 +149,11 @@ jq '.cachedUsageUtilization.utilization | keys' ~/.claude.json   # has the shape
   installed the same guard by hand, let `setup` remove those entries or you will see every banner
   twice.
 - The gate hook adds roughly 30–50 ms to every tool call (one local JSON read, no network).
+- **Windows.** Hooks run wherever `python3` is on the PATH. The status line command uses POSIX
+  shell syntax (`$(...)`, `||`), which Claude Code runs through Git Bash when installed and
+  PowerShell otherwise; without Git Bash the gauge will not render. The hooks still work.
+- `refresh_after_min`, `stale_loud_min`, and `warn_throttle_min` have a floor of 1 minute so a
+  misconfiguration cannot spawn a refresh on every tool call.
 
 ## Uninstall
 
