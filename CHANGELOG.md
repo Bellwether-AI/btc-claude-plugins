@@ -15,6 +15,15 @@ Minor version: model policy gains a legwork tier. No file layout, state, or scri
 - **`README.md`** model policy section documents the legwork tier.
 - `plugin.json` and `marketplace.json` version 1.0.0 → 1.1.0.
 
+### Fixed (found by the pre-merge review pair: code-reviewer + skill-creator auditor)
+- **Lineup was undeterminable.** §2 told the agent to pick "whatever sits one tier below `best` in the Agent tool's `model` options", but that enum is unordered (`sonnet, opus, haiku, fable`) and the agent cannot see plan usage limits, so the tier would either never fire or never retire. Replaced with a single maintained lineup line (`fable` > `opus` > `sonnet` > `haiku`; legwork is `opus`, only when the session is on `fable`; do not verify from context) and the "why" (bridges one limit gap, not quality for speed). `model: "opus"` literals collapsed to that line plus one tagged copy in work 3.4.
+- **Fix rounds 1–3 leaked judgment to the implementer.** subagent-driven-development resumes the original implementer with findings verbatim; only rounds 4–5 were addressed. §2 Thinking list and work 3.4 now require the session model to turn each finding into a specified fix before resuming the legwork implementer.
+- **SDD override was too narrow and in the wrong place.** Only the "least powerful model" sentence was overridden; SDD also says "always specify the model explicitly" and sets cheap/mid floors for reviewers. §2 now overrides SDD's whole Model Selection section, and work 3.4 says so inline where SDD's text loads.
+- **Step 3.4 routing.** The `executing-plans` branch is dead on Claude Code (that skill redirects to SDD when subagents exist) and SDD refuses tightly coupled plans. 3.4 now invokes SDD, falls back to doing the work on the session model when SDD declines, and notes SDD serializes implementers (the second in-flight slot is a reviewer).
+- **Dispatch payload conflicted with SDD's brief contract.** §2 now defers to SDD's implementer template inside SDD (brief file, report file, no-subagents) and adds only the worktree path and verbatim user instructions; outside SDD the prompt carries a stop-and-report instruction for anything unanticipated.
+- **pr-review** header now points at §2; step 2 batches all specified fixes into one legwork dispatch instead of one per finding, and carries the inline applicability test.
+- **README** v1.0.0 bullet and model-policy paragraph contradicted the new policy and banned only Haiku; both now say Haiku and Sonnet, the lineup line is named as the single update point, and the enforcement gap is stated. `baseline-tests.md` no longer names `executing-plans`. Deployments listed as legwork are qualified as user-approved.
+
 ## [claude-extra-usage-limiter-bellwether v1.0.0] - 2026-09-09
 
 New plugin. Packages the usage-tripwire guard that previously lived only in one workstation's

@@ -22,7 +22,12 @@ after a review, and to bulk mechanical work such as diffing or scanning large fi
 - PR review (`/co-dwerker:pr-review`) now separates deciding and specifying each fix (session
   model) from implementing it (legwork when the tier applies).
 - Brainstorming, design, planning, every review, every user gate, and debugging anything the
-  legwork agent could not fix on its first pass stay on the session model.
+  legwork agent could not fix on its first pass stay on the session model. In the fix loop the
+  session model turns each review finding into a specified fix before handing it back to the
+  Opus implementer; raw findings never go down a tier.
+- Which model is "best" and which is "next" is a single maintained line in
+  `references/conventions.md` §2 (`fable` > `opus` > `sonnet` > `haiku`). The agent does not try
+  to infer it from usage limits or tool option lists. Update that line when the lineup changes.
 - A session already on the second-best model has no legwork tier: there is never a second step
   down, and nothing ever runs on Sonnet or Haiku.
 
