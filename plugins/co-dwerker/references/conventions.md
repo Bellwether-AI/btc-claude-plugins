@@ -144,8 +144,9 @@ The whole **Model Selection** section of `superpowers:subagent-driven-developmen
 by this section: ignore "use the least powerful model that can handle each role", ignore "always
 specify the model explicitly when dispatching a subagent", and ignore the cheap and mid-tier
 floors it sets for reviewers and scoped re-reviews. In co-dwerker, `model` is passed for exactly
-one purpose, legwork-tier implementers; every reviewer, re-reviewer, whole-branch reviewer, and
-rounds 4 and 5 implementer omits it.
+one purpose, legwork-tier implementers; every reviewer, re-reviewer, whole-branch reviewer,
+rounds 4 and 5 implementer, and any BLOCKED re-dispatch that skill says needs a more capable
+model omits it.
 
 ---
 

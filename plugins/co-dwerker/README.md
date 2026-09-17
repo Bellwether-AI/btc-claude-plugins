@@ -79,10 +79,11 @@ they inherit the session's model; `fork` subagents also inherit the conversation
 Sonnet are never used. Cost is managed by running at most two subagents at a time, not by
 lowering model quality.
 
-The one exception is the **legwork tier** (v1.1.0). When the session is on the best model and
-that model has tighter daily or weekly limits than the next one down (Fable over Opus as of
-v1.1.0; the lineup line in `references/conventions.md` §2 is the one place to update), work
-that needs no judgment runs on the next model so the best model's limit is spent on thinking. That
+The one exception is the **legwork tier** (v1.1.0). When the session is on the top model of the
+lineup in `references/conventions.md` §2 (`fable` as of v1.1.0; the owner maintains that line
+because the best model has the tighter weekly limit, and it is the one place to update), work
+that needs no judgment runs on the next model in the lineup (`opus`) so the best model's limit is
+spent on thinking. That
 covers implementing a task the plan already specifies down to the code, the implementer's own
 first pass for errors in what it wrote, fixes the session model has already specified after a
 review, and bulk mechanical work (large diffs and scans, repetitive `git`/`gh` operations,
