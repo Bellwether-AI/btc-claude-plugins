@@ -49,7 +49,8 @@ Built for current Claude Code on Fable-class models:
   records normalized errors and warnings; `localapp_diff.py` diffs baseline against verification.
   One script for both runs means the diff compares like with like.
 - **Model policy.** Suggests `/model best` (latest Fable where available, else Opus) and lets
-  subagents inherit the session model. Never Haiku.
+  subagents inherit the session model, except the legwork tier added in v1.1.0. Never Haiku or
+  Sonnet.
 - **`skills/` layout** with `${CLAUDE_PLUGIN_ROOT}` paths, structured `AskUserQuestion` gates,
   native-worktree-aware cleanup, and waits that the Bash tool can actually execute.
 - **Half the size.** The work skill went from 786 to ~350 lines; shared conventions live in one
@@ -74,8 +75,22 @@ when the watch ends.
 
 co-dwerker performs best on the most capable model available. At session start it suggests
 `/model best` if you are not already there. Subagents are dispatched without a `model` override so
-they inherit the session's model; `fork` subagents also inherit the conversation. Haiku is never
-used. Cost is managed by running at most two subagents at a time, not by lowering model quality.
+they inherit the session's model; `fork` subagents also inherit the conversation. Haiku and
+Sonnet are never used. Cost is managed by running at most two subagents at a time, not by
+lowering model quality.
+
+The one exception is the **legwork tier** (v1.1.0). When the session is on the top model of the
+lineup in `references/conventions.md` §2 (`fable` as of v1.1.0; the owner maintains that line
+because the best model has the tighter weekly limit, and it is the one place to update), work
+that needs no judgment runs on the next model in the lineup (`opus`) so the best model's limit is
+spent on thinking. That
+covers implementing a task the plan already specifies down to the code, the implementer's own
+first pass for errors in what it wrote, fixes the session model has already specified after a
+review, and bulk mechanical work (large diffs and scans, repetitive `git`/`gh` operations,
+deployments). Design, planning, every review, every decision, and every user gate stay on the
+session model, and there is never a second step down. The harness does not enforce any of this;
+it is skill text the agent follows, so watch implementer reports in the first sessions. See
+`references/conventions.md` §2.
 
 ## Files the plugin writes
 

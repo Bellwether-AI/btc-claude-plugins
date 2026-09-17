@@ -2,6 +2,28 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [co-dwerker v1.1.0] - 2026-09-17
+
+Minor version: model policy gains a legwork tier. No file layout, state, or script changes.
+
+### Changed
+- **`references/conventions.md` §2 — legwork tier.** New subsection defining when a subagent may run on the next model below the session model: only when the session is on the top model of a maintained lineup line (`fable` > `opus` > `sonnet` > `haiku`; legwork is `opus`; the agent never infers limits or ordering from its context), and the task is fully specified with no interpretation, judgment, or decision left. Lists what counts as legwork (fully specified plan tasks, the implementer's own first error pass, fixes the session model already specified, bulk mechanical actions such as large diffs/scans, repetitive `git`/`gh` operations, deployments) and what stays on the session model (design, planning, every review, triage, fix decisions, debugging, user gates, and the fix loop: rounds 1–3 resume the implementer only with specified fixes, rounds 4–5 run on the session model). Never step down twice; never `sonnet` or `haiku`. The user's weekly Fable limit is lower than the Opus limit, and this spends Fable on thinking.
+- **`references/conventions.md` §2 — dispatch mechanics.** Legwork agents are `general-purpose` (or `Explore`) on the legwork model, never `fork` (which ignores `model`). Inside `superpowers:subagent-driven-development` they are briefed per that skill's implementer template (brief file, report file, no-subagents contract) plus the worktree path and the user's verbatim instructions; outside it the prompt carries paths, the exact command or pattern, the expected output, and a stop-and-report instruction. Every reviewer, re-reviewer, and rounds 4–5 or BLOCKED re-dispatch omits `model`. The two-in-flight limit counts legwork agents. Overrides that skill's whole Model Selection section.
+- **`references/conventions.md` §5.** Subagents bullet noting legwork dispatches are never forks.
+- **`skills/work/SKILL.md` Step 3.4.** Invokes `superpowers:subagent-driven-development` (`executing-plans` is for platforms without subagents, which Claude Code is not); falls back to the session model when that skill judges the tasks too tightly coupled; states the inline applicability test, the per-implementer dispatch rule with the single tagged `model: "opus"` literal, the inline override of that skill's Model Selection, the rounds 1–3 rule, and the plan-completeness bar. Conventions bullet updated to match.
+- **`skills/pr-review/SKILL.md` §2.** Splits "address findings" into deciding and specifying the fix (session model) and implementing it (legwork when the tier applies).
+- **`README.md`** model policy section documents the legwork tier.
+- `plugin.json` and `marketplace.json` version 1.0.0 → 1.1.0.
+
+### Fixed (found by the pre-merge review pair: code-reviewer + skill-creator auditor)
+- **Lineup was undeterminable.** §2 told the agent to pick "whatever sits one tier below `best` in the Agent tool's `model` options", but that enum is unordered (`sonnet, opus, haiku, fable`) and the agent cannot see plan usage limits, so the tier would either never fire or never retire. Replaced with a single maintained lineup line (`fable` > `opus` > `sonnet` > `haiku`; legwork is `opus`, only when the session is on `fable`; do not verify from context) and the "why" (bridges one limit gap, not quality for speed). `model: "opus"` literals collapsed to that line plus one tagged copy in work 3.4.
+- **Fix rounds 1–3 leaked judgment to the implementer.** subagent-driven-development resumes the original implementer with findings verbatim; only rounds 4–5 were addressed. §2 Thinking list and work 3.4 now require the session model to turn each finding into a specified fix before resuming the legwork implementer.
+- **SDD override was too narrow and in the wrong place.** Only the "least powerful model" sentence was overridden; SDD also says "always specify the model explicitly" and sets cheap/mid floors for reviewers. §2 now overrides SDD's whole Model Selection section, and work 3.4 says so inline where SDD's text loads.
+- **Step 3.4 routing.** The `executing-plans` branch is dead on Claude Code (that skill redirects to SDD when subagents exist) and SDD refuses tightly coupled plans. 3.4 now invokes SDD, falls back to doing the work on the session model when SDD declines, and notes SDD serializes implementers (the second in-flight slot is a reviewer).
+- **Dispatch payload conflicted with SDD's brief contract.** §2 now defers to SDD's implementer template inside SDD (brief file, report file, no-subagents) and adds only the worktree path and verbatim user instructions; outside SDD the prompt carries a stop-and-report instruction for anything unanticipated.
+- **pr-review** header now points at §2; step 2 batches all specified fixes into one legwork dispatch instead of one per finding, and carries the inline applicability test.
+- **README** v1.0.0 bullet and model-policy paragraph contradicted the new policy and banned only Haiku; both now say Haiku and Sonnet, the lineup line is named as the single update point, and the enforcement gap is stated. `baseline-tests.md` no longer names `executing-plans`. Deployments listed as legwork are qualified as user-approved.
+
 ## [claude-extra-usage-limiter-bellwether v1.0.0] - 2026-09-09
 
 New plugin. Packages the usage-tripwire guard that previously lived only in one workstation's

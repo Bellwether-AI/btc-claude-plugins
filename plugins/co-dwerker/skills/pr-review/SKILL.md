@@ -9,8 +9,9 @@ allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py *)
 Review a pull request, fix what the review finds, update the board, and hand the PR to the user
 for approval. `/co-dwerker:work` calls this at Step 3.8; it also works standalone on any PR.
 
-Conventions §1 (environment, `REPO_OWNER` vs `REPO_OWNER_NAME`, running the scripts) and §6 (`gh`
-errors): `${CLAUDE_PLUGIN_ROOT}/references/conventions.md`.
+Conventions §1 (environment, `REPO_OWNER` vs `REPO_OWNER_NAME`, running the scripts), §2 (model
+policy and the legwork tier, which step 2 uses) and §6 (`gh` errors):
+`${CLAUDE_PLUGIN_ROOT}/references/conventions.md`.
 
 ## 0. Identify the PR
 
@@ -36,8 +37,12 @@ prefer `subagent_type: "fork"` so they inherit the design discussion, and do not
 
 ## 2. Address findings
 
-For each finding: fix, re-run tests and lint, commit, push to the PR branch. Repeat until the
-review is clean. A clean first pass goes straight on.
+Decide each finding and write its fix spec (files, change, covering test). That is thinking-tier
+work and stays on the session model. Implementing the specified fixes is legwork (conventions §2):
+when the tier applies (session on the top model in the §2 lineup), batch every specified fix into
+one `general-purpose` dispatch on the legwork model with the specs in the prompt; otherwise apply
+them yourself. Re-run tests and lint, commit, push to the PR branch. Repeat until the review is
+clean. A clean first pass goes straight on.
 
 ## 3. Board (project mode only)
 

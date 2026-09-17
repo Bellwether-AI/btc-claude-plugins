@@ -1,5 +1,45 @@
 # Release Notes
 
+## co-dwerker v1.1.0
+
+### What's New
+
+**Legwork tier: spend the best model on thinking.** co-dwerker still runs on the most capable
+model and still never lowers quality to save tokens. What changed is a single, narrow exception
+for when the best model has tighter daily or weekly usage limits than the next one down (today
+that is Fable over Opus). Once the session model has written a plan detailed enough that a task
+needs no interpretation (files, code samples, test commands, acceptance criteria), that task can
+be implemented by the next model, which also runs the tests and linters and fixes its own
+breakage before handing back. The same applies to fixes the session model has already specified
+after a review, and to bulk mechanical work such as diffing or scanning large files, repetitive
+`git`/`gh` operations, and deployments.
+
+### Behavior Changes
+
+- Step 3.4 now always runs the plan through `superpowers:subagent-driven-development`
+  (`executing-plans` is only for platforms without subagents). When the legwork tier applies,
+  each fully specified task is dispatched to an Opus implementer while the session model reviews
+  the result; when it does not, implementers inherit the session model. If that skill judges the
+  plan too tightly coupled to dispatch, the session model does the work itself.
+- PR review (`/co-dwerker:pr-review`) now separates deciding and specifying each fix (session
+  model) from implementing it (legwork when the tier applies).
+- Brainstorming, design, planning, every review, every user gate, and debugging anything the
+  legwork agent could not fix on its first pass stay on the session model. In the fix loop the
+  session model turns each review finding into a specified fix before handing it back to the
+  Opus implementer; raw findings never go down a tier.
+- Which model is "best" and which is "next" is a single maintained line in
+  `references/conventions.md` §2 (`fable` > `opus` > `sonnet` > `haiku`). The agent does not try
+  to infer it from usage limits or tool option lists. Update that line when the lineup changes.
+- A session already on the second-best model has no legwork tier: there is never a second step
+  down, and nothing ever runs on Sonnet or Haiku.
+
+### Known Issues
+
+- The legwork tier is a policy the skill text asks the agent to follow, not something the harness
+  enforces. If the plan for a task turns out to be under-specified, the expected behavior is for
+  the session model to complete the plan entry first, but a rushed session could still hand off
+  too early. Watch the implementer reports during the first few sessions.
+
 ## claude-extra-usage-limiter-bellwether v1.0.0
 
 ### What's New

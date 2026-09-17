@@ -36,8 +36,8 @@ The parts you need on every step:
 - **Values, not shell variables.** `$NAME` in this file means "the value you determined earlier".
   Bash calls do not share state, so substitute the literal value in every command.
 - **Model.** If the session is not on the most capable model available, suggest `/model best`
-  once, at the start. Never pass `model` when dispatching subagents; they inherit. At most two
-  subagents in flight.
+  once, at the start. Subagents inherit (no `model`), except legwork-tier dispatches under
+  conventions §2, which run on the next model down. At most two subagents in flight.
 - **Asking.** Gates are `AskUserQuestion` calls with two to four real options, recommended first.
 - **Waiting.** No bare `sleep`. Scripts that wait get an explicit Bash `timeout`; CI waits use
   `gh pr checks --watch` and `gh run watch`.
@@ -228,8 +228,24 @@ done
 
 ### `3.4` Implement
 
-Invoke `superpowers:executing-plans`, or `superpowers:subagent-driven-development` when the plan
-has independent tasks (two subagents at a time). Follow it through its TDD cycles and commits.
+Invoke `superpowers:subagent-driven-development` (at most two subagents in flight; that skill
+serializes implementers, so the second slot is a reviewer). `superpowers:executing-plans` is only
+for a platform without subagents, which Claude Code is not. If that skill judges the plan's tasks
+too tightly coupled to dispatch, do the work yourself on the session model; the legwork tier then
+covers only the bulk mechanical actions in conventions §2. Follow the skill through its TDD cycles
+and commits.
+
+This paragraph replaces that skill's "Model Selection" section and the required `model` line in
+its implementer template. The legwork tier applies when your system prompt names the top model in
+the conventions §2 lineup (today `fable`). Then each implementer for a fully specified task is
+`general-purpose` with `model: "opus"` (the legwork model; the §2 lineup is authoritative),
+briefed the way that skill's template describes plus the worktree path and the user's
+instructions verbatim; it runs the task's tests and linters and fixes its own breakage before
+reporting. Everything else in the loop omits `model`: spec and quality reviewers, re-reviewers,
+and the fresh implementers of fix rounds 4 and 5. Fix rounds 1 to 3 resume the legwork
+implementer with fixes you have specified, not raw findings. A task whose plan entry lacks the
+files, the code or a near-complete sample, the test commands, or the acceptance criteria is not
+legwork: complete the plan entry first, or do the task on the session model.
 
 ### `3.5` Verify
 
