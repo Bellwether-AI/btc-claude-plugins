@@ -2,6 +2,19 @@
 
 All notable changes to the btc-claude-plugins repository.
 
+## [co-dwerker v1.1.0] - 2026-09-17
+
+Minor version: model policy gains a legwork tier. No file layout, state, or script changes.
+
+### Changed
+- **`references/conventions.md` §2 — legwork tier.** New subsection defining when a subagent may run on the next model below the session model: only when the session is on `/model best`, that model has tighter daily/weekly limits than the next one (Fable over Opus today), and the task is fully specified with no interpretation, judgment, or decision left. Lists what counts as legwork (fully specified plan tasks, the implementer's own first error pass, fixes the session model already specified, bulk mechanical actions such as large diffs/scans, repetitive `git`/`gh` operations, deployments) and what stays on the session model (design, planning, every review, triage, fix decisions, debugging, user gates, fix-loop rounds 4–5). Never step down twice; never `sonnet` or `haiku`. The user's weekly Fable limit is lower than the Opus limit, and this spends Fable on thinking.
+- **`references/conventions.md` §2 — dispatch mechanics.** Legwork agents are `general-purpose` (or `Explore`) with `model: "opus"`, never `fork` (which ignores `model`), and receive plan path, design doc path, task number, worktree path, and the user's verbatim instructions. Reviewers of legwork omit `model`. The two-in-flight limit counts legwork agents. Explicitly overrides the "least powerful model" guidance in `superpowers:subagent-driven-development`.
+- **`references/conventions.md` §5.** Subagents bullet noting legwork dispatches are never forks.
+- **`skills/work/SKILL.md` Step 3.4.** Prefers `superpowers:subagent-driven-development` when the legwork tier applies (so implementers can be dispatched on the next model) and states the per-implementer dispatch rule and the plan-completeness bar; `executing-plans` remains the path when the tier does not apply. Conventions bullet updated to match.
+- **`skills/pr-review/SKILL.md` §2.** Splits "address findings" into deciding and specifying the fix (session model) and implementing it (legwork when the tier applies).
+- **`README.md`** model policy section documents the legwork tier.
+- `plugin.json` and `marketplace.json` version 1.0.0 → 1.1.0.
+
 ## [claude-extra-usage-limiter-bellwether v1.0.0] - 2026-09-09
 
 New plugin. Packages the usage-tripwire guard that previously lived only in one workstation's
