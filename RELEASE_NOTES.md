@@ -16,9 +16,11 @@ after a review, and to bulk mechanical work such as diffing or scanning large fi
 
 ### Behavior Changes
 
-- Step 3.4 now prefers `superpowers:subagent-driven-development` whenever the legwork tier
-  applies, so each fully specified task is dispatched to an Opus implementer while the session
-  model reviews the result. Sessions where the tier does not apply behave as before.
+- Step 3.4 now always runs the plan through `superpowers:subagent-driven-development`
+  (`executing-plans` is only for platforms without subagents). When the legwork tier applies,
+  each fully specified task is dispatched to an Opus implementer while the session model reviews
+  the result; when it does not, implementers inherit the session model. If that skill judges the
+  plan too tightly coupled to dispatch, the session model does the work itself.
 - PR review (`/co-dwerker:pr-review`) now separates deciding and specifying each fix (session
   model) from implementing it (legwork when the tier applies).
 - Brainstorming, design, planning, every review, every user gate, and debugging anything the
