@@ -36,8 +36,8 @@ The parts you need on every step:
 - **Values, not shell variables.** `$NAME` in this file means "the value you determined earlier".
   Bash calls do not share state, so substitute the literal value in every command.
 - **Model.** If the session is not on the most capable model available, suggest `/model best`
-  once, at the start. Never pass `model` when dispatching subagents; they inherit. At most two
-  subagents in flight.
+  once, at the start. Subagents inherit (no `model`), except legwork-tier dispatches under
+  conventions §2, which run on the next model down. At most two subagents in flight.
 - **Asking.** Gates are `AskUserQuestion` calls with two to four real options, recommended first.
 - **Waiting.** No bare `sleep`. Scripts that wait get an explicit Bash `timeout`; CI waits use
   `gh pr checks --watch` and `gh run watch`.
@@ -228,8 +228,16 @@ done
 
 ### `3.4` Implement
 
-Invoke `superpowers:executing-plans`, or `superpowers:subagent-driven-development` when the plan
-has independent tasks (two subagents at a time). Follow it through its TDD cycles and commits.
+Invoke `superpowers:subagent-driven-development` (two subagents at a time) when the legwork tier
+of conventions §2 applies or the plan has independent tasks; otherwise `superpowers:executing-plans`.
+Follow it through its TDD cycles and commits.
+
+When the legwork tier applies, each implementer for a fully specified task is `general-purpose`
+with `model: "opus"`, given the plan path, design doc path, task number, worktree path, and the
+user's instructions verbatim. It runs the task's tests and linters and fixes its own breakage
+before reporting. Spec and quality reviewers omit `model`. Fix rounds 4 and 5 omit `model`. A
+task whose plan entry lacks the files, code sample, test commands, or acceptance criteria stays on
+the session model, or you complete the plan entry first.
 
 ### `3.5` Verify
 

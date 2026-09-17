@@ -72,20 +72,64 @@ instead, so every relative path in the session keeps meaning what it meant.
 co-dwerker runs long autonomous phases: design, implementation, verification, review. The quality
 of every one of those scales with the model, and the plugin owner has said explicitly that they
 prefer the most capable model everywhere and accept the token cost. Treat model quality as
-non-negotiable and manage cost through concurrency instead.
+non-negotiable and manage cost through concurrency instead. The one exception is the legwork tier
+below, which exists to stretch the best model's usage limits, not to save tokens.
 
 - **Session model.** Your system prompt names the model you are running on. If it is not the most
   capable model available, suggest once at session start: "co-dwerker works best on the most capable
   model. Run `/model best` to switch." `best` always resolves to the most capable model the account
   has, so this advice never needs updating when models change. Say it once; do not repeat it later
   in the session, and never recommend a specific older model by name.
-- **Subagents.** Do not pass a `model` parameter when dispatching. Omitted means the subagent
-  inherits the session model (unless the user configured a default subagent model, which is their
-  choice to make). `subagent_type: "fork"` always inherits, and carries the conversation with it.
-  Never pass `haiku`.
+- **Subagents.** Do not pass a `model` parameter when dispatching, except for legwork-tier work
+  (below). Omitted means the subagent inherits the session model (unless the user configured a
+  default subagent model, which is their choice to make). `subagent_type: "fork"` always inherits,
+  and carries the conversation with it. Never pass `haiku` or `sonnet`.
 - **Concurrency.** Keep at most two subagents in flight and let each land its work before launching
   more. This protects against losing work when a session's budget runs out; it is not a reason to
-  lower model quality.
+  lower model quality. The limit counts legwork-tier agents too.
+
+### Legwork tier
+
+The session model does the thinking. Some work needs none: it is many actions whose outcome is
+already decided. That work may run on the next most capable model when **all three** hold:
+
+1. the session is on the most capable model available (`/model best`);
+2. that model has tighter daily or weekly usage limits than the next model down (today a Fable
+   session hands legwork to `opus`; when the lineup changes, the next model is whatever sits one
+   tier below `best` in the Agent tool's `model` options);
+3. the task is fully specified and needs no interpretation, judgment, or decision.
+
+If the session is already on the second-best model there is no legwork tier. Never step down
+twice, and never to `sonnet` or `haiku`.
+
+**Legwork (next model down):**
+
+- Implementing a plan task that already gives the exact files, the code or a near-complete
+  sample, the test commands, and the acceptance criteria.
+- The implementer's own first pass over what it just wrote: run the tests and linters, fix the
+  breakage it introduced.
+- Implementing a fix the session model has already specified to the same standard after a review.
+- Bulk mechanical actions: a rename across many files, diffing or scanning large files or logs for
+  a stated pattern, moving or regenerating files, repetitive `git`/`gh` operations over many items,
+  running deployments or scripts and reporting their output.
+
+**Thinking (session model only):**
+
+- Brainstorming, design, writing the plan, and every gate the user answers.
+- Every review, reading its findings, deciding whether a finding is right, and specifying the fix.
+- Debugging anything the legwork agent could not fix on its first pass.
+- Any task whose plan entry falls short of the bar above: fill in the plan first, or do the task
+  yourself.
+- Fix-loop rounds 4 and 5 in `superpowers:subagent-driven-development`. That skill escalates to a
+  more capable model there; omitting `model` is how.
+
+**How to dispatch legwork.** `subagent_type: "fork"` ignores `model`, so a legwork agent is
+`general-purpose` (or `Explore` for read-only scans) with `model: "opus"`. It inherits nothing
+from the conversation: give it the plan path, the design doc path, the task number, the worktree
+path, and the user's instructions verbatim. If you find yourself explaining a decision to it in
+the prompt, the task is not legwork. Reviewers of its work omit `model`. Ignore the "least
+powerful model that can handle each role" guidance inside `superpowers:subagent-driven-development`;
+the user's policy here governs.
 
 ---
 
@@ -165,6 +209,8 @@ derive from files or `gh`.
 - Use the `Explore` agent for read-only scans of a large codebase when only the conclusion matters.
 - Pass the user's instructions to a subagent verbatim (add detail if useful, but the user chose
   their words carefully and a paraphrase loses that).
+- Legwork-tier dispatches (section 2) are never forks. They run on the next model down with
+  `model: "opus"` and get everything they need in the prompt.
 - Respect the two-at-a-time limit from section 2.
 
 ---

@@ -36,8 +36,11 @@ prefer `subagent_type: "fork"` so they inherit the design discussion, and do not
 
 ## 2. Address findings
 
-For each finding: fix, re-run tests and lint, commit, push to the PR branch. Repeat until the
-review is clean. A clean first pass goes straight on.
+For each finding, decide whether it is right and specify the fix (files, change, test). That is
+thinking-tier work and stays on the session model. Implementing a fully specified fix is legwork
+(conventions §2): when the tier applies, dispatch it to `general-purpose` with `model: "opus"`
+and the spec in the prompt; otherwise do it yourself. Re-run tests and lint, commit, push to the
+PR branch. Repeat until the review is clean. A clean first pass goes straight on.
 
 ## 3. Board (project mode only)
 

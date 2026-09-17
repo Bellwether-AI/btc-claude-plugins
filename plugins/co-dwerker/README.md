@@ -77,6 +77,15 @@ co-dwerker performs best on the most capable model available. At session start i
 they inherit the session's model; `fork` subagents also inherit the conversation. Haiku is never
 used. Cost is managed by running at most two subagents at a time, not by lowering model quality.
 
+The one exception is the **legwork tier** (v1.1.0). When the session is on the best model and
+that model has tighter daily or weekly limits than the next one down (Fable over Opus today), work
+that needs no judgment runs on the next model so the best model's limit is spent on thinking. That
+covers implementing a task the plan already specifies down to the code, the implementer's own
+first pass for errors in what it wrote, fixes the session model has already specified after a
+review, and bulk mechanical work (large diffs and scans, repetitive `git`/`gh` operations,
+deployments). Design, planning, every review, every decision, and every user gate stay on the
+session model, and there is never a second step down. See `references/conventions.md` §2.
+
 ## Files the plugin writes
 
 | File | Where | Purpose |

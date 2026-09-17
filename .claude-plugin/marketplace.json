@@ -15,7 +15,7 @@
       "name": "co-dwerker",
       "source": "./plugins/co-dwerker",
       "description": "Structured daily development workflow for any GitHub repo. Repo mode (GitHub Issues) or project mode (GitHub Projects board). Standup, brainstorm, execute with baselines and local-app verification, review, docs, close, and session continuity via checkpoints. Built for the most capable Claude models.",
-      "version": "1.0.0"
+      "version": "1.1.0"
     },
     {
       "name": "agent-eval-updates",
