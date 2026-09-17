@@ -34,7 +34,7 @@ If a command's tooling is missing (e.g., `pytest: command not found`), record `s
 
 ## Write the baseline file
 
-Before writing, add the file to the clone-local exclude so intermediate `superpowers:executing-plans` commits do not pick it up. `git rev-parse --git-path` resolves correctly inside linked worktrees too:
+Before writing, add the file to the clone-local exclude so intermediate implementation commits do not pick it up. `git rev-parse --git-path` resolves correctly inside linked worktrees too:
 
 ```bash
 EXCLUDE=$(git rev-parse --git-path info/exclude)
