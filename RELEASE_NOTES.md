@@ -1,5 +1,74 @@
 # Release Notes
 
+## co-dwerker v1.2.0
+
+### What's New
+
+**Nothing gets left behind.** Long sessions were finishing work without closing the issues it
+resolved, and a GitHub board only mirrors issue state, so those issues sat open in Planned or
+Todo for weeks. v1.2.0 closes the gap at three points:
+
+- **Left behind check at standup.** Before recommending what to work on, the standup looks for
+  open issues that recently merged PRs reference, fixes whose verification date has arrived, and
+  closed issues still sitting in the planned queue. It lists them and asks once: close all, close
+  some, or leave them open. Anything you leave open is remembered so you are not asked again.
+- **Whole resolution set at close.** A PR can resolve more than the issue the session started on.
+  The plan step now records every issue the PR fully resolves and every issue it only touches; the
+  PR body gets one `Closes #N` line per resolved issue (GitHub closes exactly one issue per
+  keyword) and a `Refs #N` line for the partials, and the close step closes each resolved issue
+  with a comment naming the PR.
+- **Pending verification.** A fix that cannot be confirmed until something happens later (a
+  scheduled job, a soak period) is still closed on merge, but co-dwerker records the condition and
+  a date, comments on the issue, and asks about it at the first standup on or after that date.
+- **Board role mapping.** co-dwerker no longer expects Status options called Backlog, Ready,
+  In Progress, and Done. It maps whatever your board has onto three roles (in progress, in review,
+  done) and asks once about any role it cannot match. New-issue offers your board's real statuses.
+
+### Behavior Changes
+
+- Standup gains a tracked step, `1.reconcile`, and a question when it finds candidates. The gate
+  into Phase 2 waits for it.
+- Phase 5 may close several issues, not one. Only issues the PR body declared with a closing
+  keyword are closed automatically; everything else goes through a question.
+- Exit reconciles issues first (from the PRs merged this session), then the board, and only
+  touches board items whose Status disagrees with the issue state. Its summary lists any fixes
+  awaiting verification with their check dates.
+- PR review reads every `Closes`/`Fixes`/`Resolves` line in the body and reviews for all of them,
+  and points out issues the body mentions without a closing keyword.
+- Companion documentation PRs are merged without a review gate. The docs owner reviews the
+  published pages in GitBook after the repo syncs, so the docs skill asks only about scope, never
+  for approval of the text. Inside a work session the docs PR still merges after the code PR so
+  published docs never lead the code.
+- The state file gains `pending_verification`, `reconcile_dismissed`, and `status_role_map`;
+  older state files without them keep working.
+- `checkpoint.py finish-issue` and `end-session` now stop with an error, instead of quietly
+  writing bad data, when `resolves_issues` or `pending_verification` is not a JSON list (for
+  example, `--set` was used where `--append` was meant). The message says how to fix it.
+- When a fix awaiting verification is confirmed, co-dwerker posts a "Verified" comment on the
+  issue before closing it, so the confirmation is kept even if the issue was already closed by
+  hand.
+
+### Fixed Issues
+
+- Issues resolved by a PR stayed open when the PR body referenced them without a closing keyword
+  or listed several after a single keyword. The exit board sweep, which only knew the session's
+  one issue per PR, could not see them either. (PolicyConductor-Functions-Python PR #22 left #19
+  and #23 open; #16 was closed by hand on 2026-09-24.)
+- Boards with Status names other than the recommended five were silently skipped when co-dwerker
+  tried to move items.
+
+### Known Issues
+
+- The orphan scan matches bare `#N` references, so its candidates include follow-up issues a PR
+  filed and issues it merely cited. It is presented as candidates, not proof, and nothing closes
+  without your answer. References written as `Repo#N` without an owner are not matched, because
+  GitHub does not link that form either.
+- The scan covers PRs merged in the last 30 days, newest 50. A repo with more merges than that in
+  a month gets the newest 50, and the skill says so.
+- Cross-repo issues (`Owner/Repo#N`) are not tracked by the resolution set. Write `Closes
+  Owner/Repo#N` in the PR body by hand, as before.
+- The `in_review` role is optional. A board with no review-like status skips that move and says so.
+
 ## co-dwerker v1.1.0
 
 ### What's New
