@@ -314,3 +314,83 @@ def test_append_dict_deduplicates(tmp_path):
         _run(tmp_path, "set", "--append", 'reconcile_dismissed={"issue": 19, "pr": 22}')
     _, state = _run(tmp_path, "show")
     assert _read(state)["progress"]["context"]["reconcile_dismissed"] == [{"issue": 19, "pr": 22}]
+
+
+def test_finish_issue_records_every_resolved_issue(tmp_path):
+    _run(tmp_path, "start-issue", "16", "--set", "planned_issues=[16, 17, 18, 30]")
+    _run(tmp_path, "set", "--set", "resolves_issues=[16, 17, 18]")
+    _, state = _run(tmp_path, "finish-issue")
+    data = _read(state)
+    assert data["completed_this_session"] == [16, 17, 18]
+    assert data["progress"]["context"]["planned_issues"] == [30]
+    assert "resolves_issues" not in data["progress"]["context"]  # per-issue key is cleared
+
+
+def test_end_session_writes_pending_verification_top_level(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _run(tmp_path, "start-issue", "16")
+    _run(
+        tmp_path,
+        "set",
+        "--append",
+        'pending_verification={"issue": 16, "pr": 22, "condition": "c",'
+        ' "check_after": "2026-09-09", "recorded": "2026-09-08"}',
+    )
+    _, state = _run(
+        tmp_path,
+        "end-session",
+        "--date",
+        "2026-09-08",
+        "--global-state-file",
+        str(tmp_path / "g.json"),
+        "--legacy-state-file",
+        str(tmp_path / "l.json"),
+    )
+    data = _read(state)
+    assert data["pending_verification"][0]["issue"] == 16
+    assert data["progress"]["context"]["pending_verification"][0]["issue"] == 16
+
+
+def test_end_session_writes_empty_pending_verification_when_none(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _run(tmp_path, "start-issue", "16")
+    _, state = _run(
+        tmp_path,
+        "end-session",
+        "--global-state-file",
+        str(tmp_path / "g.json"),
+        "--legacy-state-file",
+        str(tmp_path / "l.json"),
+    )
+    assert _read(state)["pending_verification"] == []
+
+
+def test_show_prints_pending_verification_from_context(tmp_path, capsys):
+    _run(tmp_path, "start-issue", "16")
+    _run(
+        tmp_path,
+        "set",
+        "--append",
+        'pending_verification={"issue": 16, "pr": 22, "condition": "c",'
+        ' "check_after": "2026-09-09", "recorded": "2026-09-08"}',
+    )
+    _run(tmp_path, "show")
+    out = capsys.readouterr().out
+    assert "pending_verification:" in out
+    assert '"check_after": "2026-09-09"' in out
+
+
+def test_show_falls_back_to_top_level_pending_verification(tmp_path, capsys):
+    state = tmp_path / ".co-dwerker.state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "work_mode": "project",
+                "pending_verification": [
+                    {"issue": 16, "pr": 22, "condition": "c", "check_after": "2026-09-09"}
+                ],
+            }
+        )
+    )
+    checkpoint.main(["--state-file", str(state), "show"])
+    assert '"issue": 16' in capsys.readouterr().out

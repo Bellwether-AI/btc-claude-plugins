@@ -19,6 +19,9 @@ Usage (invoke as ``python3 <plugin>/scripts/checkpoint.py ...``):
   checkpoint.py mark 3.1 completed --set baseline_tests_file=.co-dwerker.baseline-tests.json
   checkpoint.py set --set pr_number=57 --append local_app_pids=12345
   checkpoint.py set --top repo_owner_name=owner/repo        # top-level key, not progress.context
+  checkpoint.py set --set resolves_issues='[16, 17]'          # every issue the PR closes (Phase 3)
+  checkpoint.py set --append pending_verification='{"issue": 16, "pr": 22, "condition": "…",
+      "check_after": "2026-09-09", "recorded": "2026-09-08"}'    # one JSON object per --append
   checkpoint.py gate 3          # exit 0 if every phase-3 step is completed, else 1 + missing
   checkpoint.py show            # progress block + last_session summary
   checkpoint.py finish-issue    # record completion and clear the per-issue progress
@@ -361,6 +364,12 @@ def cmd_show(args: argparse.Namespace) -> int:
             )
     if data.get("completed_this_session"):
         print(f"completed_this_session: {data['completed_this_session']}")
+    pending = (data.get("progress") or {}).get("context", {}).get("pending_verification")
+    if not pending:
+        pending = data.get("pending_verification")
+    if pending:
+        print("pending_verification:")
+        print(json.dumps(pending, indent=2))
     last = data.get("last_session")
     if isinstance(last, dict):
         print("last_session:")
@@ -376,11 +385,18 @@ def cmd_finish_issue(args: argparse.Namespace) -> int:
     prog = _progress(data)
     issue = prog.get("issue")
     history = data.setdefault("completed_this_session", [])
-    if issue is not None and issue not in history:
-        history.append(issue)
+    resolved: list[int] = [issue] if issue is not None else []
+    for n in prog["context"].get("resolves_issues") or []:
+        if isinstance(n, int) and n not in resolved:
+            resolved.append(n)
+    for n in resolved:
+        if n not in history:
+            history.append(n)
     planned = prog["context"].get("planned_issues")
-    if isinstance(planned, list) and issue in planned:
-        planned.remove(issue)
+    if isinstance(planned, list):
+        for n in resolved:
+            if n in planned:
+                planned.remove(n)
     prog.update(
         {
             "issue": None,
@@ -394,7 +410,7 @@ def cmd_finish_issue(args: argparse.Namespace) -> int:
     prog["completed_steps"] = []
     _keep_session_context(prog)
     _save(args.state_file, data)
-    print(f"checkpoint: issue #{issue} recorded as completed; progress cleared")
+    print(f"checkpoint: issues {resolved} recorded as completed; progress cleared")
     return 0
 
 
@@ -447,6 +463,7 @@ def cmd_end_session(args: argparse.Namespace) -> int:
     data["github_project_number"] = ctx.get("project_number", data.get("github_project_number"))
     data["github_project_title"] = ctx.get("project_title", data.get("github_project_title"))
     data["planned_issues"] = list(ctx.get("planned_issues", []))
+    data["pending_verification"] = list(ctx.get("pending_verification") or [])
     data.pop("completed_this_session", None)
     _save(args.state_file, data)
 
