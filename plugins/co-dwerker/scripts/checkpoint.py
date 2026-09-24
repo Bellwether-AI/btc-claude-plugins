@@ -273,7 +273,13 @@ def _apply_context(
         else:
             raise CheckpointError(f"cannot append to non-list context key {key!r}")
     for key in clears:
-        ctx.pop(key, None)
+        if key == "pending_verification":
+            # An absent key means "seed from the top-level copy" (see _progress), so a
+            # clear must leave an empty list behind or the entries the user just cleared
+            # come back on the next write.
+            ctx[key] = []
+        else:
+            ctx.pop(key, None)
 
 
 def _apply_top(data: dict[str, Any], tops: list[str]) -> None:

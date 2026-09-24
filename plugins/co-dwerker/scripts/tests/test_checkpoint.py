@@ -508,3 +508,17 @@ def test_finish_issue_on_v1_1_0_shaped_context(tmp_path):
     code, state = _run(tmp_path, "finish-issue")
     assert code == 0
     assert _read(state)["completed_this_session"] == [16]
+
+
+def test_clear_pending_verification_does_not_resurrect_top_level_copy(tmp_path):
+    # --clear is the natural spelling of "all verified"; the next write must not re-seed the
+    # context copy from the stale top-level list that end-session wrote yesterday.
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    state = tmp_path / ".co-dwerker.state.json"
+    state.write_text(json.dumps({"pending_verification": [_PENDING_16]}))
+    _run(tmp_path, "start-issue", "30")
+    _run(tmp_path, "set", "--clear", "pending_verification")
+    _run(tmp_path, "mark", "1.fetch", "completed")
+    assert _read(state)["progress"]["context"]["pending_verification"] == []
+    _end_session(tmp_path)
+    assert _read(state)["pending_verification"] == []

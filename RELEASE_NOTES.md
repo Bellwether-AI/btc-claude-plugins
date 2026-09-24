@@ -52,8 +52,9 @@ Todo for weeks. v1.2.0 closes the gap at three points:
 
 - Issues resolved by a PR stayed open when the PR body referenced them without a closing keyword
   or listed several after a single keyword. The exit board sweep, which only knew the session's
-  one issue per PR, could not see them either. (PolicyConductor-Functions-Python PR #22 left #19
-  and #23 open; #16 was closed by hand on 2026-09-24.)
+  one issue per PR, could not see them either. (PolicyConductor-Functions-Python PR #22 fixed
+  five issues and left #17, #18, #20, #21 open this way; #16 waited on a next-day verification
+  nobody came back to. All five were closed by hand on 2026-09-24.)
 - Boards with Status names other than the recommended five were silently skipped when co-dwerker
   tried to move items.
 

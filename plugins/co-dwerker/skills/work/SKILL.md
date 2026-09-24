@@ -327,7 +327,8 @@ commits.
 ### `3.7` Create PR
 
 Re-read `resolves_issues` and `refs_issues` against what was actually implemented and correct them
-(`checkpoint.py set --set …`). If any resolved issue should only be closed for good after a later
+(`checkpoint.py set --set …`). If `resolves_issues` is unset (a session resumed from before
+v1.2.0, or a skipped 3.2 mark), set it to `[$ISSUE_NUMBER]` now. If any resolved issue should only be closed for good after a later
 observation (tomorrow's scheduled run, a deploy, a customer confirming), record it with the
 condition and the date to ask on, and ask the user for the date if the design did not give one:
 `checkpoint.py set --set verify_later='[{"issue": N, "condition": "<observable>", "check_after": "YYYY-MM-DD"}]'`.
@@ -414,7 +415,9 @@ No approval step here: the docs repo owner reviews companion docs in GitBook aft
 
 ### `5.close-issue`
 
-Close every issue the PR declared it resolves (conventions §10), not only `$ISSUE_NUMBER`. For
+Close every issue the PR declared it resolves (conventions §10), not only `$ISSUE_NUMBER`. If
+`resolves_issues` is unset (a session resumed from before v1.2.0), treat it as `[$ISSUE_NUMBER]`;
+an empty loop here would close nothing, which is the failure this release exists to end. For
 each `N` in `resolves_issues`:
 
 ```bash

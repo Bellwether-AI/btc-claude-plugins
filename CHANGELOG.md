@@ -31,7 +31,7 @@ Minor version: every issue a PR resolves gets closed, and issues left behind by 
 - `plugin.json` and `marketplace.json` version 1.1.0 → 1.2.0.
 
 ### Fixed
-- **Issues a PR resolved stayed open when the body used a bare `#N` or listed several issues after one keyword.** PolicyConductor-Functions-Python PR #22 left #19 and #23 open this way, and #16 had to be closed by hand on 2026-09-24. Phase 5 now closes the declared resolution set, and the standup and exit scans catch what earlier sessions missed.
+- **Issues a PR resolved stayed open when the body used a bare `#N` or listed several issues after one keyword.** PolicyConductor-Functions-Python PR #22 fixed #16 #17 #18 #20 #21 with no closing keyword and left #17, #18, #20, #21 open this way; #16 was left open for a next-day verification nobody returned to. All were closed by hand on 2026-09-24. Phase 5 now closes the declared resolution set, and the standup and exit scans catch what earlier sessions missed.
 - **Board moves silently did nothing on boards whose Status options were not named Backlog / Ready / In Progress / Done.** Role mapping replaces the exact-name lookup.
 - **Exit reconciled the board from the state file only**, so it never saw issues resolved outside the session's view. It now reconciles from the merged PRs and from the board's own item state.
 
@@ -44,6 +44,8 @@ Minor version: every issue a PR resolves gets closed, and issues left behind by 
 - **The Status role table lived only in work Phase 0b**, so pr-review and new-issue standalone had no vocabulary to map an unfamiliar board. The table (roles, matching names, who moves each) now lives in conventions §10 and the three skills point at it.
 - **new-issue §4 had no path when the state file lacked `status_options`/`status_role_map`** (no work session has run on that board yet). It now fetches the Status field and maps it with the §10 table, offering the first three options when no `done` match exists.
 - **Reconciliation mechanics were written three times** (work 1.reconcile, exit §3, conventions §10) with the jq pipeline in two of them, so a fix to one would drift from the others. The pipeline, the ask-and-act rules, the comment texts, and the `$WHEN` (`standup` / `exit`) parameter live once in §10; work and exit keep only the fetch commands and point at it. work SKILL.md 507 → 480 lines. The moved pipeline was re-run verbatim on saved PolicyConductor data in all three caller shapes (standup array, single `gh pr view` wrapped with `jq '[.]'`, several PRs via `jq -s .`).
+- **`checkpoint.py set --clear pending_verification` resurrected yesterday's entries.** Clearing popped the context key, and the next write re-seeded it from the top-level copy, so verified fixes were asked about again at the following standup. A clear of that key now leaves `[]` behind (whole-branch review).
+- **work 3.7 / 5.close-issue had no fallback when `resolves_issues` was unset** (a session resumed from before v1.2.0 or a skipped 3.2 mark), so Phase 5 would close nothing, not even `$ISSUE_NUMBER`. Both steps now treat an unset key as `[$ISSUE_NUMBER]` (whole-branch review).
 - **`refs_issues` were never recorded as dismissed**, so the next standup's orphan scan would ask about a partial fix the PR body already explained. Phase 5 now appends each to `reconcile_dismissed` with the PR number; the §3 context table names the writers.
 
 ## [co-dwerker v1.1.0] - 2026-09-17
