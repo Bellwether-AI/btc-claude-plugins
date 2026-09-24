@@ -38,6 +38,11 @@ the app boots and diff its logs against the baseline, changelog, PR, review. Eve
 checkpointed to `.co-dwerker.state.json` so nothing is skipped and a crash or compacted context
 resumes at the right step.
 
+**Standup** ends with a **Left behind** check: open issues that merged PRs reference, fixes whose
+verification date has arrived, and closed issues still in the planned queue. **Close** closes
+every issue the PR declared it resolves, not just the one the session started on, and records
+fixes that await a later observation so the next standup asks about them.
+
 ## What v1.0.0 changed
 
 Built for current Claude Code on Fable-class models:
@@ -117,7 +122,8 @@ plugins/co-dwerker/
 
 ## GitHub Project board (project mode)
 
-Expected fields, created on first run if missing:
+Fields a new board gets on first run. An existing board keeps its own Status names; co-dwerker
+maps them onto in-progress / in-review / done roles (see `references/conventions.md` §10):
 
 | Field | Type | Values |
 |-------|------|--------|
