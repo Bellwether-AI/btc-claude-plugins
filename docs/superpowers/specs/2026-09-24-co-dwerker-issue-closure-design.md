@@ -225,6 +225,21 @@ Step 0 derives `$ISSUE_NUMBER` from a single `Closes #N`. It now collects every 
 #N` in the body as the resolution set; the first one remains `$ISSUE_NUMBER` for the board item
 lookup, and the whole set is stated in the "Reviewing PR #N for issues …" line.
 
+### 3.7a Companion docs PRs merge without a review gate (added mid-implementation, 2026-09-24)
+
+The user's instruction: documentation written into the companion docs repo (the "solutions"
+repo) can always be merged, because they review and edit the published pages in GitBook after
+the repo syncs, not the PR. So:
+
+- The docs skill states this policy in its header. Its only questions are about scope (docs repo
+  configuration, "no user-facing impact: skip or write anyway"); it never asks for approval of the
+  docs content.
+- Standalone, the docs skill merges the PR it just opened: `gh pr checks --watch` when the docs
+  repo has workflows, then `gh pr merge --squash --delete-branch`, and reports the merged URL.
+- Inside the work skill nothing changes in ordering: Step 5.docs-merge still merges the docs PR
+  after the code PR has merged, so published docs never lead the code. The step text says why it
+  needs no approval.
+
 ### 3.8 `checkpoint.py`
 
 | Change | Detail |
