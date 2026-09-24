@@ -53,7 +53,7 @@ GLOBAL_STATE_FILE_LEGACY = os.path.join(os.path.expanduser("~"), ".co-dwerker-la
 PHASES: dict[str, list[str]] = {
     "0a": ["mode"],
     "0b": ["project", "fields"],
-    "1": ["fetch", "report", "recommend"],
+    "1": ["fetch", "report", "reconcile", "recommend"],
     "2": ["load", "brainstorm", "board", "discovered"],
     "3": ["1", "1b", "2", "3", "4", "5", "5a", "6", "7", "8"],
     "4": ["docs"],
@@ -62,6 +62,8 @@ PHASES: dict[str, list[str]] = {
 }
 
 # Session-level context keys (not per-issue); they survive start-issue and finish-issue.
+# pending_verification / reconcile_dismissed / status_role_map back the v1.2.0 issue
+# reconciliation (conventions §10).
 SESSION_KEYS = {
     "work_mode",
     "main_checkout",
@@ -76,6 +78,9 @@ SESSION_KEYS = {
     "priority_field_id",
     "priority_options",
     "local_app_pids",
+    "pending_verification",
+    "reconcile_dismissed",
+    "status_role_map",
 }
 
 

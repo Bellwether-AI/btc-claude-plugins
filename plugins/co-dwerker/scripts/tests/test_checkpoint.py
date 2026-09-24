@@ -269,3 +269,48 @@ def test_show_prints_completed_this_session(tmp_path, capsys):
     _run(tmp_path, "finish-issue")
     _run(tmp_path, "show")
     assert "completed_this_session: [1]" in capsys.readouterr().out
+
+
+def test_gate_1_requires_reconcile(tmp_path):
+    _run(tmp_path, "start-issue", "7")
+    for step in ("fetch", "report", "recommend"):
+        _run(tmp_path, "mark", f"1.{step}", "completed")
+    code, _ = _run(tmp_path, "gate", "1")
+    assert code == 1
+    _run(tmp_path, "mark", "1.reconcile", "completed")
+    code, _ = _run(tmp_path, "gate", "1")
+    assert code == 0
+
+
+def test_reconciliation_keys_survive_issue_boundaries(tmp_path):
+    _run(tmp_path, "start-issue", "7")
+    _run(
+        tmp_path,
+        "set",
+        "--append",
+        'pending_verification={"issue": 16, "pr": 22, "condition": "nightly run succeeds",'
+        ' "check_after": "2026-09-09", "recorded": "2026-09-08"}',
+    )
+    _run(
+        tmp_path,
+        "set",
+        "--append",
+        'reconcile_dismissed={"issue": 19, "pr": 22}',
+        "--set",
+        'status_role_map={"in_progress": "opt-a", "in_review": null, "done": "opt-c"}',
+    )
+    _run(tmp_path, "finish-issue")
+    _, state = _run(tmp_path, "start-issue", "8")
+    ctx = _read(state)["progress"]["context"]
+    assert ctx["pending_verification"][0]["issue"] == 16
+    assert ctx["reconcile_dismissed"] == [{"issue": 19, "pr": 22}]
+    assert ctx["status_role_map"]["in_review"] is None
+    assert ctx["status_role_map"]["done"] == "opt-c"
+
+
+def test_append_dict_deduplicates(tmp_path):
+    _run(tmp_path, "start-issue", "7")
+    for _ in range(2):
+        _run(tmp_path, "set", "--append", 'reconcile_dismissed={"issue": 19, "pr": 22}')
+    _, state = _run(tmp_path, "show")
+    assert _read(state)["progress"]["context"]["reconcile_dismissed"] == [{"issue": 19, "pr": 22}]
