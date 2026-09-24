@@ -96,14 +96,10 @@ Repo mode skips Phase 0b.
    If either field is missing, offer to create it using
    `${CLAUDE_PLUGIN_ROOT}/references/setup-project-board.md`. Boards differ in what they call
    their statuses, so map the Status options onto the three roles co-dwerker moves items through
-   (conventions §10). Match names case-insensitively, first match in option order wins, and say
-   which option each role got: `in_progress` ← In Progress, Doing, Active, Working;
-   `in_review` ← In Review, Review, Reviewing, PR Open; `done` ← Done, Complete, Completed,
-   Closed, Shipped. For a role with no match, ask once: "This board has no `<role>` status.
-   Which option should co-dwerker use for it?" with up to three of the board's real option
-   names and **Skip this transition**; skip stores `null`. If the state file already has
-   `status_role_map` and every id in it is still among the field's options, keep it without
-   asking. Record `project_number`, `project_title`, `project_id`, `status_field_id`,
+   using the role-name table in conventions §10, and say which option each role got (or that a
+   role was skipped). If the state file already has `status_role_map` and every id in it is
+   still among the field's options, keep it without asking.
+   Record `project_number`, `project_title`, `project_id`, `status_field_id`,
    `status_options` (name → option id), `status_role_map` (role → option id or null),
    `priority_field_id`, `priority_options` with `checkpoint.py set` so later phases, the
    pr-review and new-issue skills, and the exit skill have them. Mark `0b.project` and
@@ -147,13 +143,14 @@ Present:
 ### `1.reconcile`
 
 Issues get left behind when a PR fixed them without a closing keyword, or when a fix was waiting
-on a later observation nobody came back to (conventions §10). Three sources, one question, both
-modes.
+on a later observation nobody came back to. Conventions §10 holds the mechanics (scan pipeline,
+the question, the close and bookkeeping commands); this step supplies the inputs and runs them
+with `$WHEN`=`standup`, in both modes.
 
-**a. Pending verification.** Entries in `progress.context.pending_verification` (falling back to
-the top-level `pending_verification`) whose `check_after` is `$TODAY` or earlier.
+**a. Pending verification.** Entries in `progress.context.pending_verification`
+(`checkpoint.py show` prints them) whose `check_after` is `$TODAY` or earlier.
 
-**b. Orphan scan.** Open issues referenced by PRs merged in the last 30 days (newest 50):
+**b. Orphan scan.** PRs merged in the last 30 days (newest 50) and the open issues:
 
 ```bash
 SINCE=$(date -v-30d +%Y-%m-%d 2>/dev/null || date -d '30 days ago' +%Y-%m-%d)
@@ -161,43 +158,15 @@ gh pr list --repo "$REPO_OWNER_NAME" --state merged --search "merged:>=$SINCE" \
   --json number,title,body,mergedAt --limit 50 > /tmp/co-dwerker-merged.json
 gh issue list --repo "$REPO_OWNER_NAME" --state open --json number,title --limit 200 \
   > /tmp/co-dwerker-open.json
-jq -c -n --slurpfile prs /tmp/co-dwerker-merged.json --slurpfile open /tmp/co-dwerker-open.json '
-  ($open[0] | map({key: (.number|tostring), value: .title}) | from_entries) as $open
-  | $prs[0][] | . as $pr
-  | [ ($pr.body // "") | scan("(?:^|[^A-Za-z0-9_/-])#([0-9]+)") | .[0] ] | unique[]
-  | select($open[.] != null)
-  | {pr: $pr.number, pr_title: $pr.title, merged: $pr.mergedAt[0:10],
-     issue: (.|tonumber), issue_title: $open[.]}'
 ```
 
-Drop any `{issue, pr}` pair that is in `progress.context.reconcile_dismissed`. Bare `#N`
-references are candidates, not proof: PR bodies also cite follow-ups they filed and issue
-numbers from other repos, so read the PR title before recommending a close. If `jq` is not
-installed, say so and skip the scan rather than joining the two lists by hand.
+Run the §10 pipeline on the two files and drop `reconcile_dismissed` pairs.
 
-**c. Planned-queue hygiene.** For each number in `planned_issues`, `gh issue view N --json state
---jq .state`; drop the closed ones with a one-line note and `checkpoint.py set --set
-planned_issues='[...]'`. No question.
+**c. Planned-queue hygiene.** For each number in `planned_issues`,
+`gh issue view $N --repo "$REPO_OWNER_NAME" --json state --jq .state`; drop the closed ones with
+a one-line note and `checkpoint.py set --set planned_issues='[...]'`. No question.
 
-**Report and ask.** Add a **Left behind** section to the standup, one line per candidate:
-`#N <title> — referenced by PR #P "<title>" (merged <date>)` or `#N <title> — pending
-verification since <recorded>: <condition>`. Nothing listed → say "Nothing left behind" and mark
-`1.reconcile` completed. Otherwise one `AskUserQuestion`: **Close all listed as completed
-(Recommended)** / **Close some (say which)** / **Leave all open**.
-
-For each issue the user closes:
-
-```bash
-gh issue close $N --repo "$REPO_OWNER_NAME" --reason completed \
-  --comment "Latent close (co-dwerker standup $TODAY): resolved by PR #$P, merged $MERGED_DATE, which carried no closing keyword for this issue."
-```
-
-(for a pending-verification entry: `--comment "Verified (co-dwerker standup $TODAY): <condition>. Fix shipped in PR #$P."`).
-For each orphan the user keeps open: `checkpoint.py set --append reconcile_dismissed='{"issue": N, "pr": P}'`.
-For each pending entry: remove it from `pending_verification` (`checkpoint.py set --set
-pending_verification='[<remaining entries>]'`); if the user says it is still waiting, keep it with
-the new `check_after` they give. If the user reports the fix did not work, invoke
-`co-dwerker:new-issue` or reopen (`gh issue reopen N`) as they prefer. Then
+Add a **Left behind** section to the standup and ask and act per §10. Then
 `checkpoint.py mark 1.reconcile completed`.
 
 ### `1.recommend`
@@ -462,6 +431,10 @@ gh issue view $N --repo "$REPO_OWNER_NAME" --json state --jq .state
   ```
   If GitHub already closed it on merge, leave it closed; the record is what brings it back.
 - `CLOSED` otherwise → nothing to do.
+
+For each `N` in `refs_issues`: `checkpoint.py set --append reconcile_dismissed='{"issue": N, "pr": $PR_NUMBER}'`.
+The PR body mentions them, so without this the next standup's orphan scan offers them as
+candidates for closing.
 
 Mark `5.close-issue` completed (and `5.docs-merge` / `5.board` when they ran).
 

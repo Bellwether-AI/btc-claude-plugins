@@ -58,28 +58,23 @@ state on its own, and the failure that actually happens is a fixed issue that ne
 (conventions §10).
 
 **Issues.** For every PR merged this session (`--prs-merged`, plus `progress.context.pr_number`
-if `gh pr view $N --json state --jq .state` says `MERGED`):
+if `gh pr view $PR_NUMBER --repo "$REPO_OWNER_NAME" --json state --jq .state` says `MERGED`):
 
 ```bash
-gh pr view $P --repo "$REPO_OWNER_NAME" --json number,title,body,mergedAt > /tmp/co-dwerker-pr.json
+gh pr view $P --repo "$REPO_OWNER_NAME" --json number,title,body,mergedAt | jq '[.]' > /tmp/co-dwerker-merged.json
 gh issue list --repo "$REPO_OWNER_NAME" --state open --json number,title --limit 200 > /tmp/co-dwerker-open.json
-jq -c -n --slurpfile pr /tmp/co-dwerker-pr.json --slurpfile open /tmp/co-dwerker-open.json '
-  ($open[0] | map({key: (.number|tostring), value: .title}) | from_entries) as $open
-  | $pr[0] as $pr
-  | [ ($pr.body // "") | scan("(?:^|[^A-Za-z0-9_/-])#([0-9]+)") | .[0] ] | unique[]
-  | select($open[.] != null)
-  | {pr: $pr.number, pr_title: $pr.title, merged: $pr.mergedAt[0:10], issue: (.|tonumber), issue_title: $open[.]}'
 ```
 
-Skip pairs already in `reconcile_dismissed`. List what is left and ask once: **Close all listed
-as completed (Recommended)** / **Close some (say which)** / **Leave all open**. Close with
-`gh issue close $N --repo "$REPO_OWNER_NAME" --reason completed --comment "Latent close
-(co-dwerker exit $TODAY): resolved by PR #$P, merged $MERGED_DATE, which carried no closing
-keyword for this issue."`; record kept-open pairs with `checkpoint.py set --append
-reconcile_dismissed='{"issue": N, "pr": P}'`. Then read `pending_verification` and repeat it in
-the exit summary so tomorrow's reader sees what is waiting.
+(Several PRs: write each `gh pr view` to its own file and `jq -s . /tmp/co-dwerker-pr-*.json >
+/tmp/co-dwerker-merged.json`.) Run the conventions §10 pipeline, drop `reconcile_dismissed`
+pairs, and ask and act per §10 with `$WHEN`=`exit`. Then read `pending_verification`
+(`checkpoint.py show`) and repeat it in the exit summary so tomorrow's reader sees what is
+waiting.
 
-**Board (project mode).** Only items whose Status disagrees with the issue's state:
+**Board (project mode).** The ids come from `progress.context` per conventions §10
+(`project_id`, `status_field_id`, `status_role_map`, `project_number`; `checkpoint.py show`),
+falling back to the top-level `github_project_number`; `$STATUS_ROLE_DONE_ID` is
+`status_role_map.done`. Only items whose Status disagrees with the issue's state:
 
 ```bash
 gh api graphql -f org="$REPO_OWNER" -F num=$PROJECT_NUMBER -f query='

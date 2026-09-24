@@ -18,7 +18,7 @@ Two work modes, remembered per repo:
 | `/co-dwerker:pr-review` | Review any PR: automated review, fix findings, board update, approval gate |
 | `/co-dwerker:docs` | Create or update companion documentation for a PR or issue |
 | `/co-dwerker:new-issue` | Create a GitHub issue, with board priority/status in project mode |
-| `/co-dwerker:exit` | Wind down: state file, board, memories, session record, summary |
+| `/co-dwerker:exit` | Wind down: state file, issue and board reconciliation, memories, session record, summary |
 
 `/co-dwerker:work-bellwether-project` remains as a hidden alias that redirects to `work`.
 

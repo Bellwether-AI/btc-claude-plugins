@@ -202,7 +202,7 @@ error.
 | `status_role_map` | Phase 0b | 2.board, pr-review §3, 5.board, new-issue §4, exit |
 | `resolves_issues`, `refs_issues`, `verify_later` | Step 3.2, revised at 3.7 | Step 3.7 (PR body), Step 5.close-issue, `finish-issue` |
 | `pending_verification` | Step 5.close-issue, exit §3 | Step 1.reconcile, exit §3, `show` |
-| `reconcile_dismissed` | Step 1.reconcile, exit §3 | Step 1.reconcile |
+| `reconcile_dismissed` | Step 1.reconcile, Step 5.close-issue (`refs_issues`), exit §3 | Step 1.reconcile, exit §3 |
 | `issues_created` | new-issue skill | exit |
 
 Session-level keys (`work_mode`, `main_checkout`, `planned_issues`, `issues_created`,
@@ -345,7 +345,9 @@ and the top-level keys from `progress` at exit.
 - `last_session` is the end-of-day summary written by `end-session`.
 - `pending_verification` is the top-level copy `end-session` makes of the session key of the
   same name, so the next standup (and `checkpoint.py show`) can read it even if `progress` was
-  reset. `progress.context.pending_verification` is authoritative when both exist.
+  reset. `progress.context.pending_verification` is authoritative while the key exists (an
+  empty list means everything was verified); `checkpoint.py` seeds it from the top-level copy on
+  the first write of a session, so a reset `progress` never loses the old entries.
 - `work_mode` absent means a pre-v0.2 state file; present the first-time mode prompt rather than
   defaulting.
 
@@ -418,28 +420,86 @@ other repos are written into the body by hand (`Closes Org/Repo#N`) and are not 
 **Phase 5** closes every open issue in `resolves_issues` that is not in `verify_later`, with a
 comment naming the PR. For each `verify_later` entry it appends to the session-level
 `pending_verification` list (`{"issue", "pr", "condition", "check_after", "recorded"}`) and
-comments on the issue with the condition and the date co-dwerker will ask about it.
+comments on the issue with the condition and the date co-dwerker will ask about it. Each
+`refs_issues` entry is recorded as a `reconcile_dismissed` pair with the PR, because the PR body
+mentions it and the orphan scan below would otherwise offer it back as a candidate.
 
-**Reconciliation** (standup Step 1.reconcile, exit §3) looks for issues left behind:
+**Reconciliation** (standup Step 1.reconcile with `$WHEN`=`standup`, exit §3 with `$WHEN`=`exit`)
+looks for issues left behind. The callers supply the inputs; the mechanics live here so both
+behave the same way. Three sources:
 
 1. `pending_verification` entries whose `check_after` is today or earlier.
-2. Open issues referenced by PRs merged in the last 30 days. Same-repo references are extracted
-   with the `jq` regex `(?:^|[^A-Za-z0-9_/-])#([0-9]+)` (no lookbehind, so it runs in both `jq`
-   and `gh --jq`). These are candidates, not proof: bodies also cite follow-ups they filed and
-   numbers from other repos.
-3. `planned_issues` entries whose issue is already closed (dropped silently, with a note).
+2. Open issues referenced by merged PRs: the standup scans the last 30 days (newest 50), exit
+   scans the PRs merged this session.
+3. `planned_issues` entries whose issue is already closed (standup only; dropped with a one-line
+   note, no question).
 
-Present the candidates and ask once with `AskUserQuestion`: **Close all listed as completed
-(Recommended)** / **Close some (say which)** / **Leave all open**. Closing is
-`gh issue close N --repo "$REPO_OWNER_NAME" --reason completed --comment "<why, naming the PR
-and, for orphans, that the PR carried no closing keyword>"`. Kept-open orphans go into the
-session-level `reconcile_dismissed` list as `{"issue": N, "pr": P}` so the same pair is not
-asked again; kept-open pending entries either leave the list or get a new `check_after`.
+**Orphan-scan pipeline.** The caller writes the merged PRs as a JSON array to
+`/tmp/co-dwerker-merged.json` (`gh pr list ... --json number,title,body,mergedAt` is already an
+array; a single `gh pr view ... --json number,title,body,mergedAt` is wrapped with `jq '[.]'`)
+and the open issues to `/tmp/co-dwerker-open.json` (`gh issue list --repo "$REPO_OWNER_NAME"
+--state open --json number,title --limit 200`), then runs:
+
+```bash
+jq -c -n --slurpfile prs /tmp/co-dwerker-merged.json --slurpfile open /tmp/co-dwerker-open.json '
+  ($open[0] | map({key: (.number|tostring), value: .title}) | from_entries) as $open
+  | $prs[0][] | . as $pr
+  | [ ($pr.body // "") | scan("(?:^|[^A-Za-z0-9_/-])#([0-9]+)") | .[0] ] | unique[]
+  | select($open[.] != null)
+  | {pr: $pr.number, pr_title: $pr.title, merged: $pr.mergedAt[0:10],
+     issue: (.|tonumber), issue_title: $open[.]}'
+```
+
+Each row is one candidate; its `pr` and `merged` are the `$P` and `$MERGED_DATE` the close
+comment below names. The regex has no lookbehind, so it runs in both `jq` and `gh --jq`, and
+refusing an alphanumeric before `#` keeps `Repo#N` (another repo) out. Drop rows whose
+`{issue, pr}` pair is in `reconcile_dismissed`. Rows are candidates, not proof: PR bodies also
+cite follow-ups they filed and numbers from other repos, so read the PR title before recommending
+a close. Without `jq`, say so and skip the scan rather than joining the two lists by hand.
+
+**Ask and act.** Report one line per candidate — `#N <title> — referenced by PR #P "<title>"
+(merged <date>)` or `#N <title> — pending verification since <recorded>: <condition>` — or say
+"Nothing left behind". Otherwise one `AskUserQuestion`: **Close all listed as completed
+(Recommended)** / **Close some (say which)** / **Leave all open**. Then:
+
+- **Orphan the user closes:**
+  ```bash
+  gh issue close $N --repo "$REPO_OWNER_NAME" --reason completed \
+    --comment "Latent close (co-dwerker $WHEN $TODAY): resolved by PR #$P, merged $MERGED_DATE, which carried no closing keyword for this issue."
+  ```
+- **Orphan kept open:** `checkpoint.py set --append reconcile_dismissed='{"issue": N, "pr": P}'`
+  so the same pair is not asked again.
+- **Pending-verification entry the user confirms:** the issue is usually already closed (Phase 5
+  closed it, or GitHub did on merge), and `gh issue close` on a closed issue exits without
+  posting its `--comment`, so the record would be lost. Comment first, then close only if it is
+  still open:
+  ```bash
+  gh issue comment $N --repo "$REPO_OWNER_NAME" \
+    --body "Verified (co-dwerker $WHEN $TODAY): <condition>. Fix shipped in PR #$P."
+  gh issue view $N --repo "$REPO_OWNER_NAME" --json state --jq .state   # OPEN → gh issue close $N --repo "$REPO_OWNER_NAME" --reason completed
+  ```
+  Remove the entry with `checkpoint.py set --set pending_verification='[<remaining entries>]'`.
+- **Pending entry still waiting:** keep it with the new `check_after` the user gives. **Fix did
+  not work:** invoke `co-dwerker:new-issue` or `gh issue reopen $N --repo "$REPO_OWNER_NAME"`, as
+  the user prefers, and remove the entry.
 
 **Board status roles.** Boards name their statuses differently, so Phase 0b maps the Status
 field's options to three roles and stores `status_role_map` = `{"in_progress": <option id or
-null>, "in_review": <option id or null>, "done": <option id or null>}`. Steps that move an item
-use the role's id and, when it is `null`, say the board has no such status and continue. A board
-with its built-in "Item closed" workflow enabled moves closed issues to Done on its own, which is
-why reconciliation fixes issues first and only then looks for board items that disagree with
-issue state.
+null>, "in_review": <option id or null>, "done": <option id or null>}`. Match names
+case-insensitively, first match in option order wins, and say which option each role got:
+
+| Role | Option names it matches | Moved by |
+|------|-------------------------|----------|
+| `in_progress` | In Progress, Doing, Active, Working | work 2.board |
+| `in_review` | In Review, Review, Reviewing, PR Open | pr-review §3 |
+| `done` | Done, Complete, Completed, Closed, Shipped | work 5.board, exit §3 |
+
+For a role with no match, ask once — "This board has no `<role>` status. Which option should
+co-dwerker use for it?" — with up to three of the board's real option names and **Skip this
+transition**; skip stores `null`. Steps that move an item use the role's id and, when it is
+`null`, say the board has no such status and continue. The ids come from `progress.context`
+(`project_id`, `status_field_id`, `status_role_map`, `project_number`; `checkpoint.py show`
+prints them), falling back to the top-level `github_project_number`; a skill running standalone
+rebuilds the map from `gh project field-list` the same way. A board with its built-in "Item
+closed" workflow enabled moves closed issues to Done on its own, which is why reconciliation
+fixes issues first and only then looks for board items that disagree with issue state.
