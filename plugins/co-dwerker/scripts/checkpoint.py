@@ -198,6 +198,39 @@ def _split_kv(item: str) -> tuple[str, Any]:
     return key.strip(), _parse_value(value)
 
 
+def _pending_list(value: Any, where: str) -> list[Any]:
+    """Validate a ``pending_verification`` value: absent means empty, anything else is a list."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise CheckpointError(
+            f"{where} pending_verification must be a JSON list; use --append for one entry"
+        )
+    return list(value)
+
+
+def _issue_numbers(value: Any) -> list[int]:
+    """Validate ``resolves_issues``: a JSON list of issue numbers (``17``, ``"17"``, ``"#17"``)."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise CheckpointError(
+            "resolves_issues must be a JSON list of issue numbers, e.g. '[16, 17]'"
+            f" (got {value!r})"
+        )
+    out: list[int] = []
+    for n in value:
+        if isinstance(n, bool) or not isinstance(n, (int, str)):
+            raise CheckpointError(f"resolves_issues entries must be issue numbers, got {n!r}")
+        try:
+            out.append(int(str(n).lstrip("#")))
+        except ValueError as exc:
+            raise CheckpointError(
+                f"resolves_issues entries must be issue numbers, got {n!r}"
+            ) from exc
+    return out
+
+
 def _progress(data: dict[str, Any]) -> dict[str, Any]:
     prog = data.get("progress")
     if not isinstance(prog, dict):
@@ -209,7 +242,16 @@ def _progress(data: dict[str, Any]) -> dict[str, Any]:
     prog.setdefault("status", None)
     prog.setdefault("step_status", None)
     prog.setdefault("completed_steps", [])
-    prog.setdefault("context", {})
+    if not isinstance(prog.get("context"), dict):
+        prog["context"] = {}
+    # The context copy of pending_verification is authoritative while it exists (conventions
+    # §9). When a reset progress block lacks it, seed it from the top-level copy that
+    # end-session wrote, so the first write of a new session builds on the old entries
+    # instead of replacing them.
+    if "pending_verification" not in prog["context"]:
+        prog["context"]["pending_verification"] = _pending_list(
+            data.get("pending_verification"), "top-level"
+        )
     return prog
 
 
@@ -364,8 +406,10 @@ def cmd_show(args: argparse.Namespace) -> int:
             )
     if data.get("completed_this_session"):
         print(f"completed_this_session: {data['completed_this_session']}")
-    pending = (data.get("progress") or {}).get("context", {}).get("pending_verification")
-    if not pending:
+    ctx = (data.get("progress") or {}).get("context") or {}
+    if "pending_verification" in ctx:
+        pending = ctx["pending_verification"]  # authoritative while present, even when empty
+    else:
         pending = data.get("pending_verification")
     if pending:
         print("pending_verification:")
@@ -384,10 +428,12 @@ def cmd_finish_issue(args: argparse.Namespace) -> int:
     data = _load(args.state_file)
     prog = _progress(data)
     issue = prog.get("issue")
+    # Validate before touching any state so a bad key can be corrected and the command re-run.
+    extra = _issue_numbers(prog["context"].get("resolves_issues"))
     history = data.setdefault("completed_this_session", [])
     resolved: list[int] = [issue] if issue is not None else []
-    for n in prog["context"].get("resolves_issues") or []:
-        if isinstance(n, int) and n not in resolved:
+    for n in extra:
+        if n not in resolved:
             resolved.append(n)
     for n in resolved:
         if n not in history:
@@ -463,7 +509,7 @@ def cmd_end_session(args: argparse.Namespace) -> int:
     data["github_project_number"] = ctx.get("project_number", data.get("github_project_number"))
     data["github_project_title"] = ctx.get("project_title", data.get("github_project_title"))
     data["planned_issues"] = list(ctx.get("planned_issues", []))
-    data["pending_verification"] = list(ctx.get("pending_verification") or [])
+    data["pending_verification"] = _pending_list(ctx.get("pending_verification"), "context")
     data.pop("completed_this_session", None)
     _save(args.state_file, data)
 

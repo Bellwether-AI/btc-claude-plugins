@@ -394,3 +394,117 @@ def test_show_falls_back_to_top_level_pending_verification(tmp_path, capsys):
     )
     checkpoint.main(["--state-file", str(state), "show"])
     assert '"issue": 16' in capsys.readouterr().out
+
+
+def _end_session(tmp_path, *extra):
+    return _run(
+        tmp_path,
+        "end-session",
+        "--global-state-file",
+        str(tmp_path / "g.json"),
+        "--legacy-state-file",
+        str(tmp_path / "l.json"),
+        *extra,
+    )
+
+
+_PENDING_16 = {"issue": 16, "pr": 22, "condition": "c", "check_after": "2026-09-09"}
+
+
+def test_show_hides_pending_verification_when_context_list_is_empty(tmp_path, capsys):
+    # The context copy is authoritative when the key exists (conventions §9); an emptied
+    # list means the user closed everything at standup, so a stale top-level copy must not
+    # resurface in `show`.
+    state = tmp_path / ".co-dwerker.state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "pending_verification": [_PENDING_16],
+                "progress": {"context": {"pending_verification": []}},
+            }
+        )
+    )
+    checkpoint.main(["--state-file", str(state), "show"])
+    assert "pending_verification:" not in capsys.readouterr().out
+
+
+def test_show_tolerates_null_progress_context(tmp_path, capsys):
+    state = tmp_path / ".co-dwerker.state.json"
+    state.write_text(json.dumps({"progress": {"context": None}, "pending_verification": []}))
+    assert checkpoint.main(["--state-file", str(state), "show"]) == 0
+
+
+def test_end_session_keeps_top_level_pending_verification_when_context_lacks_it(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    state = tmp_path / ".co-dwerker.state.json"
+    state.write_text(
+        json.dumps({"pending_verification": [_PENDING_16], "progress": {"context": {}}})
+    )
+    _end_session(tmp_path)
+    assert _read(state)["pending_verification"] == [_PENDING_16]
+
+
+def test_append_pending_verification_merges_with_top_level_copy(tmp_path):
+    # A v1.2.0 state file whose progress was reset still carries the top-level copy; the
+    # first write of the new session must build on it, not replace it.
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    state = tmp_path / ".co-dwerker.state.json"
+    state.write_text(json.dumps({"pending_verification": [_PENDING_16]}))
+    _run(tmp_path, "start-issue", "30")
+    _run(
+        tmp_path,
+        "set",
+        "--append",
+        'pending_verification={"issue": 30, "pr": 41, "condition": "d",'
+        ' "check_after": "2026-10-01"}',
+    )
+    _end_session(tmp_path)
+    assert [e["issue"] for e in _read(state)["pending_verification"]] == [16, 30]
+
+
+def test_end_session_rejects_non_list_pending_verification(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _run(tmp_path, "start-issue", "16")
+    _run(tmp_path, "set", "--set", 'pending_verification={"issue": 16, "pr": 22}')
+    code, state = _end_session(tmp_path)
+    assert code == 2
+    assert "pending_verification must be a JSON list" in capsys.readouterr().err
+    assert "last_session" not in _read(state)
+
+
+def test_finish_issue_rejects_non_list_resolves_issues(tmp_path, capsys):
+    _run(tmp_path, "start-issue", "16", "--set", "planned_issues=[16, 17, 18]")
+    _run(tmp_path, "set", "--set", "resolves_issues=16,17")  # not JSON: stays a string
+    code, state = _run(tmp_path, "finish-issue")
+    assert code == 2
+    assert "resolves_issues must be a JSON list" in capsys.readouterr().err
+    data = _read(state)
+    assert data["progress"]["issue"] == 16  # nothing changed; the command can be re-run
+    assert data["progress"]["context"]["planned_issues"] == [16, 17, 18]
+    assert "completed_this_session" not in data
+
+
+def test_finish_issue_rejects_non_numeric_resolves_entries(tmp_path, capsys):
+    _run(tmp_path, "start-issue", "16")
+    _run(tmp_path, "set", "--set", 'resolves_issues=[16, "#1x"]')
+    code, state = _run(tmp_path, "finish-issue")
+    assert code == 2
+    assert "resolves_issues" in capsys.readouterr().err
+    assert _read(state)["progress"]["issue"] == 16
+
+
+def test_finish_issue_normalises_string_issue_numbers(tmp_path):
+    _run(tmp_path, "start-issue", "16", "--set", "planned_issues=[16, 17, 18]")
+    _run(tmp_path, "set", "--set", 'resolves_issues=["17", "#18"]')
+    _, state = _run(tmp_path, "finish-issue")
+    data = _read(state)
+    assert data["completed_this_session"] == [16, 17, 18]
+    assert data["progress"]["context"]["planned_issues"] == []
+
+
+def test_finish_issue_on_v1_1_0_shaped_context(tmp_path):
+    # No planned_issues, no resolves_issues: behaves exactly as before v1.2.0.
+    _run(tmp_path, "start-issue", "16")
+    code, state = _run(tmp_path, "finish-issue")
+    assert code == 0
+    assert _read(state)["completed_this_session"] == [16]
