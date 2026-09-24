@@ -17,7 +17,8 @@ policy and the legwork tier, which step 2 uses) and §6 (`gh` errors):
 
 **From the work skill.** `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py show` prints
 `progress.context` with `pr_number`, `pr_url`, the active `progress.issue`, `work_mode`, and the
-board ids. Confirm in one line — "Reviewing PR #N for issue #M" — and go to step 1.
+board ids, and `resolves_issues`. Confirm in one line — "Reviewing PR #N for issues #A, #B" —
+and go to step 1.
 
 **Standalone.** Ask for a PR number or URL, then:
 
@@ -25,10 +26,15 @@ board ids. Confirm in one line — "Reviewing PR #N for issue #M" — and go to 
 gh pr view $PR_NUMBER --repo "$REPO_OWNER_NAME" --json number,title,body,headRefName,state,url,labels
 ```
 
-Keep `url` as `$PR_URL`. Derive `$ISSUE_NUMBER` from a `Closes #N` in the body, else from
-`progress.issue` in the state file if it exists, else null. Read `work_mode` and the project
-number from the state file (`progress.context.work_mode` / `project_number`, falling back to the
-top-level `work_mode` / `github_project_number`).
+Keep `url` as `$PR_URL`. Collect every same-repo `Closes|Fixes|Resolves #N` in the body as the
+resolution set (conventions §10); the first is `$ISSUE_NUMBER` for the board lookup. If the body
+has none, fall back to `progress.issue` in the state file if it exists, else null. Confirm in one
+line — "Reviewing PR #N for issues #A, #B" — and if the title or body mentions an issue only as a
+bare `#N`, say so: GitHub closes nothing on a bare reference, so the author should add
+`Closes #N` before merge or the issue waits for Phase 5 or a later reconciliation to find it.
+Read `work_mode` and the project number from the state
+file (`progress.context.work_mode` / `project_number`, falling back to the top-level `work_mode`
+/ `github_project_number`).
 
 ## 1. Review
 
@@ -46,20 +52,23 @@ clean. A clean first pass goes straight on.
 
 ## 3. Board (project mode only)
 
-Move the item to In Review. Inside the work skill the ids are in `progress.context`
-(`project_id`, `item_id`, `status_field_id`, `status_options`). Standalone, fetch them:
+Move the item to the board's `in_review` role (conventions §10). Inside the work skill the ids are
+in `progress.context` (`project_id`, `item_id`, `status_field_id`, `status_role_map`). Standalone,
+fetch them and build the role map from the conventions §10 role-name table:
 
 ```bash
 gh project view $PROJECT_NUMBER --owner "$REPO_OWNER" --format json --jq '.id'                 # PROJECT_ID
 gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER" --format json \
-  --jq '.fields[] | select(.name=="Status") | {id, options}'                                   # STATUS_FIELD_ID + option ids
+  --jq '.fields[] | select(.name=="Status") | {id, options}'                                   # STATUS_FIELD_ID + options → role map
 gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER" --format json \
   | jq -r '.items[] | select(.content.number? == '$ISSUE_NUMBER') | .id'                        # ITEM_ID
 gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID \
-  --single-select-option-id $STATUS_IN_REVIEW_ID
+  --single-select-option-id $STATUS_ROLE_IN_REVIEW_ID
 ```
 
-No linked issue → say "No linked issue found for this PR; skipping the board update" and move on.
+`in_review` is `null` (the board has no review status) → say "This board has no in-review
+status; leaving the item where it is" and move on. No linked issue → say "No linked issue found
+for this PR; skipping the board update" and move on.
 
 ## 4. Discovered work
 

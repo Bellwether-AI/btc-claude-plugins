@@ -13,6 +13,11 @@ On first run in project mode, if the project board is missing expected fields, o
 | Status | Single select | Backlog, Ready, In Progress, In Review, Done |
 | Priority | Single select | P0-Critical, P1-High, P2-Medium, P3-Low |
 
+These are the values a **new** board gets. An existing board keeps its own names: Phase 0b maps
+whatever Status options it has onto the three roles co-dwerker moves items through
+(`in_progress`, `in_review`, `done`; conventions §10) and asks once about any role it cannot
+match. Do not rename a working board's options to fit this table.
+
 ### Optional Fields
 
 These are used if present but not required:

@@ -11,7 +11,7 @@ full picture. Several systems each hold part of that picture, so this skill writ
 them:
 
 1. The local state file (`.co-dwerker.state.json`) — machine-readable resume point
-2. The GitHub Projects board (project mode) — shared, human-visible status
+2. GitHub issues and, in project mode, the Projects board — what is actually closed and where it sits
 3. Auto-memory (`~/.claude/projects/<project>/memory/`) — durable facts and learnings
 4. Project status files (`.co-dwerker.json`, `CLAUDE.md`, `project_state.md`)
 5. Episodic memory — the searchable conversation record
@@ -39,20 +39,60 @@ checkpoint.py end-session --repo-owner-name $REPO_OWNER_NAME \
   --prs-created <numbers> --prs-merged <numbers>
 ```
 
-Omit any list flag that has nothing to report. This writes `last_session` and the top-level keys
-from `progress` (leaving `progress` itself intact for Resume Check), writes the global last-repo
-file `~/.claude/co-dwerker-last-repo.json` so `/co-dwerker:work` can find this repo from
-anywhere, and removes the pre-v0.3.1 global file. The state file is already kept out of
-`git status` by `.git/info/exclude`; no `.gitignore` change is needed.
+Omit any list flag that has nothing to report.
 
-## 3. Update the project board (project mode only)
+`completed_this_session` already holds every issue `finish-issue` recorded, including the extra
+entries of each PR's `resolves_issues`; pass `--completed` only for issues finished outside the
+work skill.
+
+This writes `last_session` and the top-level keys from `progress` (leaving `progress` itself
+intact for Resume Check), writes the global last-repo file `~/.claude/co-dwerker-last-repo.json`
+so `/co-dwerker:work` can find this repo from anywhere, and removes the pre-v0.3.1 global file.
+The state file is already kept out of `git status` by `.git/info/exclude`; no `.gitignore` change
+is needed.
+
+## 3. Reconcile issues, then the board
+
+Issues first, because a project board with its built-in "Item closed" workflow follows issue
+state on its own, and the failure that actually happens is a fixed issue that never closed
+(conventions §10).
+
+**Issues.** For every PR merged this session (`--prs-merged`, plus `progress.context.pr_number`
+if `gh pr view $PR_NUMBER --repo "$REPO_OWNER_NAME" --json state --jq .state` says `MERGED`):
 
 ```bash
-gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER" --format json --limit 100
+gh pr view $P --repo "$REPO_OWNER_NAME" --json number,title,body,mergedAt | jq '[.]' > /tmp/co-dwerker-merged.json
+gh issue list --repo "$REPO_OWNER_NAME" --state open --json number,title --limit 200 > /tmp/co-dwerker-open.json
 ```
 
-For each issue touched this session make sure the board agrees with reality: completed → Done,
-mid-work → In Progress, PR awaiting review → In Review. Only fix discrepancies.
+(Several PRs: write each `gh pr view` to its own file and `jq -s . /tmp/co-dwerker-pr-*.json >
+/tmp/co-dwerker-merged.json`.) Run the conventions §10 pipeline, drop `reconcile_dismissed`
+pairs, and ask and act per §10 with `$WHEN`=`exit`. Then read `pending_verification`
+(`checkpoint.py show`) and repeat it in the exit summary so tomorrow's reader sees what is
+waiting.
+
+**Board (project mode).** The ids come from `progress.context` per conventions §10
+(`project_id`, `status_field_id`, `status_role_map`, `project_number`; `checkpoint.py show`),
+falling back to the top-level `github_project_number`; `$STATUS_ROLE_DONE_ID` is
+`status_role_map.done`. Only items whose Status disagrees with the issue's state:
+
+```bash
+gh api graphql -f org="$REPO_OWNER" -F num=$PROJECT_NUMBER -f query='
+query($org:String!,$num:Int!,$after:String){
+  organization(login:$org){projectV2(number:$num){items(first:100,after:$after){
+    pageInfo{hasNextPage endCursor}
+    nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name optionId}}
+      content{__typename ... on Issue{number state repository{nameWithOwner}}}}}}}}' \
+  --jq '.data.organization.projectV2.items | {more: .pageInfo, rows: [.nodes[] | select(.content.__typename=="Issue") | {id, option: .fieldValueByName.optionId, status: .fieldValueByName.name, repo: .content.repository.nameWithOwner, issue: .content.number, state: .content.state}]}'
+```
+
+Repeat with `-f after=<endCursor>` while `more.hasNextPage`. For a user-owned project replace
+`organization(login:$org)` with `user(login:$org)`. A row is a discrepancy when `state == CLOSED`
+and `option != status_role_map.done`, or `state == OPEN` and `option == status_role_map.done`.
+Move the first kind to `done` with `gh project item-edit --project-id $PROJECT_ID --id <id>
+--field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_ROLE_DONE_ID` (when `done` is not
+`null`); ask about the second kind, since an open issue in Done usually means someone closed the
+wrong thing. Report "board agrees with issue state" when there are none.
 
 ## 4. Save memories
 
@@ -126,4 +166,5 @@ git stash list
 
 Close with a short summary that tomorrow's reader can act on without the conversation: the date
 and mode, what was completed (with PR numbers), what was created, what is in progress and at which
-step and branch, the recommended starting point for the next session, and any open items.
+step and branch, the recommended starting point for the next session, any open items, and the
+pending-verification list with its check-after dates.
