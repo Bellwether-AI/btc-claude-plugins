@@ -440,6 +440,9 @@ Otherwise `checkpoint.py mark 5.ci completed`.
 
 `gh pr merge $DOCS_PR_NUMBER --repo "$DOCS_REPO" --squash --delete-branch`
 
+No approval step here: the docs repo owner reviews companion docs in GitBook after the sync
+(docs skill header). It runs after `5.merge` so published docs never lead the code.
+
 ### `5.close-issue`
 
 Close every issue the PR declared it resolves (conventions §10), not only `$ISSUE_NUMBER`. For

@@ -12,6 +12,11 @@ described change. Works standalone at any time and is called by `/co-dwerker:wor
 Scope: the **companion docs repo** only. `CHANGELOG.md` and `RELEASE_NOTES.md` in the code repo
 belong to the work skill's Step 3.6.
 
+The docs repo owner reviews and edits the published pages in GitBook after the repo syncs, not
+the PR, so a docs PR has no approval gate here. The questions in this skill are about scope
+(which repo, whether a change has documentation impact); once the PR exists, merge it as §6
+describes.
+
 Conventions §1 (environment, running the scripts, never `cd` out of the code repo), §6 (`gh`
 errors), §9 (`.co-dwerker.json` schema): `${CLAUDE_PLUGIN_ROOT}/references/conventions.md`. If
 `REPO_OWNER_NAME` is empty, fall back to `repo_owner_name` in `.co-dwerker.state.json`, and
@@ -94,6 +99,11 @@ EOF
 
 Inside the work skill: `checkpoint.py set --set docs_pr_number=<n> --set docs_pr_url=<url>`.
 
+**Standalone:** merge it now. `gh pr checks <n> --repo "$DOCS_REPO" --watch --fail-fast` (Bash
+timeout 600000; skip when `gh workflow list --repo "$DOCS_REPO"` is empty), then
+`gh pr merge <n> --repo "$DOCS_REPO" --squash --delete-branch`. **Inside the work skill:** leave
+it open; Step 5.docs-merge merges it after the code PR, so published docs never lead the code.
+
 ## 7. Cross-reference (work skill only)
 
 Back in the code repo, add a line to `CHANGELOG.md` referencing the docs PR. Standalone
@@ -101,5 +111,6 @@ invocations skip this.
 
 ## 8. Confirm
 
-Tell the user the docs PR URL, what changed in the docs, and the related code PR and issue.
+Tell the user the docs PR URL (merged, when standalone), what changed in the docs, and the
+related code PR and issue.
 Inside the work skill, Phase 4 treats this confirmation as its gate. Standalone, you are done.
