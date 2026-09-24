@@ -54,7 +54,10 @@ Read the state file (`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint.py show`)
 `progress.context.work_mode` / `project_number`, falling back to the top-level `work_mode` /
 `github_project_number`. If the mode is not `project`, skip to step 5.
 
-Ask for a board status: **Backlog (Recommended)**, **Ready**, **In Progress**. Then:
+Offer the board's own statuses: read `status_options` and `status_role_map` from the state file
+(fetch with `gh project field-list` if absent) and list up to three options that are not the
+`done` role, first one marked "(Recommended)". `$SELECTED_STATUS_OPTION_ID` below is the id of
+the option the user picked. Then:
 
 ```bash
 gh project view $PROJECT_NUMBER --owner "$REPO_OWNER" --format json --jq '.id'          # PROJECT_ID
