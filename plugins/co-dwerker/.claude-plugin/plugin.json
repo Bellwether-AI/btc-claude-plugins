@@ -1,7 +1,7 @@
 {
   "name": "co-dwerker",
   "version": "1.2.0",
-  "description": "Structured daily development workflow for any GitHub repo: start or resume a session, standup, triage and work issues, brainstorm, implement with baselines and local-app verification, review, merge, docs, and wind down with state persistence. Repo mode (GitHub Issues with priority labels) or project mode (GitHub Projects board). Built for the most capable Claude models.",
+  "description": "MOVED on 2026-10-07 to https://github.com/Bellwether-Technology/bellwether-claude-plugins (install as co-dwerker@bellwether-claude-plugins). This copy is frozen at 1.2.0 and gets no further updates. Structured daily development workflow for any GitHub repo: start or resume a session, standup, triage and work issues, brainstorm, implement with baselines and local-app verification, review, merge, docs, and wind down with state persistence. Repo mode (GitHub Issues with priority labels) or project mode (GitHub Projects board). Built for the most capable Claude models.",
   "author": {
     "name": "Bellwether AI"
   }

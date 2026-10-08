@@ -1,5 +1,9 @@
 # claude-extra-usage-limiter-bellwether
 
+> **Moved.** `claude-extra-usage-limiter-bellwether` now lives in [bellwether-claude-plugins](https://github.com/Bellwether-Technology/bellwether-claude-plugins)
+> (`/plugin install claude-extra-usage-limiter-bellwether@bellwether-claude-plugins`). This copy is frozen at 1.0.0
+> as of 2026-10-07 and will not receive updates.
+
 A local guard that stops Claude Code **before** your plan usage spills into pay-as-you-go
 **extra-usage credits**.
 

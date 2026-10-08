@@ -1,5 +1,13 @@
 # Release Notes
 
+## Plugins moved (2026-10-07)
+
+`co-dwerker` and `claude-extra-usage-limiter-bellwether` have moved to
+[bellwether-claude-plugins](https://github.com/Bellwether-Technology/bellwether-claude-plugins). The copies in this repo are frozen
+(co-dwerker 1.2.0, limiter 1.0.0) and will not receive updates; their descriptions and READMEs now
+say so. To keep getting updates: `/plugin uninstall <name>@btc-claude-plugins`, then
+`/plugin install <name>@bellwether-claude-plugins`. Nothing else in this marketplace changed.
+
 ## co-dwerker v1.2.0
 
 ### What's New
