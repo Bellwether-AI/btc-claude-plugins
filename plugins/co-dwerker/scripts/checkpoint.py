@@ -19,6 +19,9 @@ Usage (invoke as ``python3 <plugin>/scripts/checkpoint.py ...``):
   checkpoint.py mark 3.1 completed --set baseline_tests_file=.co-dwerker.baseline-tests.json
   checkpoint.py set --set pr_number=57 --append local_app_pids=12345
   checkpoint.py set --top repo_owner_name=owner/repo        # top-level key, not progress.context
+  checkpoint.py set --set resolves_issues='[16, 17]'          # every issue the PR closes (Phase 3)
+  checkpoint.py set --append pending_verification='{"issue": 16, "pr": 22, "condition": "…",
+      "check_after": "2026-09-09", "recorded": "2026-09-08"}'    # one JSON object per --append
   checkpoint.py gate 3          # exit 0 if every phase-3 step is completed, else 1 + missing
   checkpoint.py show            # progress block + last_session summary
   checkpoint.py finish-issue    # record completion and clear the per-issue progress
@@ -53,7 +56,7 @@ GLOBAL_STATE_FILE_LEGACY = os.path.join(os.path.expanduser("~"), ".co-dwerker-la
 PHASES: dict[str, list[str]] = {
     "0a": ["mode"],
     "0b": ["project", "fields"],
-    "1": ["fetch", "report", "recommend"],
+    "1": ["fetch", "report", "reconcile", "recommend"],
     "2": ["load", "brainstorm", "board", "discovered"],
     "3": ["1", "1b", "2", "3", "4", "5", "5a", "6", "7", "8"],
     "4": ["docs"],
@@ -62,6 +65,8 @@ PHASES: dict[str, list[str]] = {
 }
 
 # Session-level context keys (not per-issue); they survive start-issue and finish-issue.
+# pending_verification / reconcile_dismissed / status_role_map back the v1.2.0 issue
+# reconciliation (conventions §10).
 SESSION_KEYS = {
     "work_mode",
     "main_checkout",
@@ -76,6 +81,9 @@ SESSION_KEYS = {
     "priority_field_id",
     "priority_options",
     "local_app_pids",
+    "pending_verification",
+    "reconcile_dismissed",
+    "status_role_map",
 }
 
 
@@ -190,6 +198,39 @@ def _split_kv(item: str) -> tuple[str, Any]:
     return key.strip(), _parse_value(value)
 
 
+def _pending_list(value: Any, where: str) -> list[Any]:
+    """Validate a ``pending_verification`` value: absent means empty, anything else is a list."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise CheckpointError(
+            f"{where} pending_verification must be a JSON list; use --append for one entry"
+        )
+    return list(value)
+
+
+def _issue_numbers(value: Any) -> list[int]:
+    """Validate ``resolves_issues``: a JSON list of issue numbers (``17``, ``"17"``, ``"#17"``)."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise CheckpointError(
+            "resolves_issues must be a JSON list of issue numbers, e.g. '[16, 17]'"
+            f" (got {value!r})"
+        )
+    out: list[int] = []
+    for n in value:
+        if isinstance(n, bool) or not isinstance(n, (int, str)):
+            raise CheckpointError(f"resolves_issues entries must be issue numbers, got {n!r}")
+        try:
+            out.append(int(str(n).lstrip("#")))
+        except ValueError as exc:
+            raise CheckpointError(
+                f"resolves_issues entries must be issue numbers, got {n!r}"
+            ) from exc
+    return out
+
+
 def _progress(data: dict[str, Any]) -> dict[str, Any]:
     prog = data.get("progress")
     if not isinstance(prog, dict):
@@ -201,7 +242,16 @@ def _progress(data: dict[str, Any]) -> dict[str, Any]:
     prog.setdefault("status", None)
     prog.setdefault("step_status", None)
     prog.setdefault("completed_steps", [])
-    prog.setdefault("context", {})
+    if not isinstance(prog.get("context"), dict):
+        prog["context"] = {}
+    # The context copy of pending_verification is authoritative while it exists (conventions
+    # §9). When a reset progress block lacks it, seed it from the top-level copy that
+    # end-session wrote, so the first write of a new session builds on the old entries
+    # instead of replacing them.
+    if "pending_verification" not in prog["context"]:
+        prog["context"]["pending_verification"] = _pending_list(
+            data.get("pending_verification"), "top-level"
+        )
     return prog
 
 
@@ -223,7 +273,13 @@ def _apply_context(
         else:
             raise CheckpointError(f"cannot append to non-list context key {key!r}")
     for key in clears:
-        ctx.pop(key, None)
+        if key == "pending_verification":
+            # An absent key means "seed from the top-level copy" (see _progress), so a
+            # clear must leave an empty list behind or the entries the user just cleared
+            # come back on the next write.
+            ctx[key] = []
+        else:
+            ctx.pop(key, None)
 
 
 def _apply_top(data: dict[str, Any], tops: list[str]) -> None:
@@ -356,6 +412,14 @@ def cmd_show(args: argparse.Namespace) -> int:
             )
     if data.get("completed_this_session"):
         print(f"completed_this_session: {data['completed_this_session']}")
+    ctx = (data.get("progress") or {}).get("context") or {}
+    if "pending_verification" in ctx:
+        pending = ctx["pending_verification"]  # authoritative while present, even when empty
+    else:
+        pending = data.get("pending_verification")
+    if pending:
+        print("pending_verification:")
+        print(json.dumps(pending, indent=2))
     last = data.get("last_session")
     if isinstance(last, dict):
         print("last_session:")
@@ -370,12 +434,21 @@ def cmd_finish_issue(args: argparse.Namespace) -> int:
     data = _load(args.state_file)
     prog = _progress(data)
     issue = prog.get("issue")
+    # Validate before touching any state so a bad key can be corrected and the command re-run.
+    extra = _issue_numbers(prog["context"].get("resolves_issues"))
     history = data.setdefault("completed_this_session", [])
-    if issue is not None and issue not in history:
-        history.append(issue)
+    resolved: list[int] = [issue] if issue is not None else []
+    for n in extra:
+        if n not in resolved:
+            resolved.append(n)
+    for n in resolved:
+        if n not in history:
+            history.append(n)
     planned = prog["context"].get("planned_issues")
-    if isinstance(planned, list) and issue in planned:
-        planned.remove(issue)
+    if isinstance(planned, list):
+        for n in resolved:
+            if n in planned:
+                planned.remove(n)
     prog.update(
         {
             "issue": None,
@@ -389,7 +462,7 @@ def cmd_finish_issue(args: argparse.Namespace) -> int:
     prog["completed_steps"] = []
     _keep_session_context(prog)
     _save(args.state_file, data)
-    print(f"checkpoint: issue #{issue} recorded as completed; progress cleared")
+    print(f"checkpoint: issues {resolved} recorded as completed; progress cleared")
     return 0
 
 
@@ -442,6 +515,7 @@ def cmd_end_session(args: argparse.Namespace) -> int:
     data["github_project_number"] = ctx.get("project_number", data.get("github_project_number"))
     data["github_project_title"] = ctx.get("project_title", data.get("github_project_title"))
     data["planned_issues"] = list(ctx.get("planned_issues", []))
+    data["pending_verification"] = _pending_list(ctx.get("pending_verification"), "context")
     data.pop("completed_this_session", None)
     _save(args.state_file, data)
 

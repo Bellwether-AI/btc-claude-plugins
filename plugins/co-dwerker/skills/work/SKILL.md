@@ -17,7 +17,7 @@ Two work modes, remembered per repo:
 - **Project mode** — a GitHub Projects board with Status and Priority fields.
 
 **Workflow:** Repo Detection → Resume Check → 0a Mode → 0b Project (project mode only) →
-1 Standup → 2 Brainstorm → 3 Execute → 4 Docs → 5 Close → 6 Next (loops to 2)
+1 Standup (incl. Left behind) → 2 Brainstorm → 3 Execute → 4 Docs → 5 Close → 6 Next (loops to 2)
 
 ## Ground rules
 
@@ -92,12 +92,18 @@ Repo mode skips Phase 0b.
    gh project view $PROJECT_NUMBER --owner "$REPO_OWNER" --format json --jq '.id'
    gh project field-list $PROJECT_NUMBER --owner "$REPO_OWNER" --format json
    ```
-   Expect **Status** (Backlog, Ready, In Progress, In Review, Done) and **Priority** (P0-Critical,
-   P1-High, P2-Medium, P3-Low). If either is missing, offer to create it using
-   `${CLAUDE_PLUGIN_ROOT}/references/setup-project-board.md`. Record `project_number`,
-   `project_title`, `project_id`, `status_field_id`, `status_options` (name → option id),
-   `priority_field_id`, `priority_options` with `checkpoint.py set` so later phases, the pr-review
-   and new-issue skills, and the exit skill have them. Mark `0b.project` and `0b.fields` completed.
+   Expect **Priority** (P0-Critical, P1-High, P2-Medium, P3-Low) and a single-select **Status**.
+   If either field is missing, offer to create it using
+   `${CLAUDE_PLUGIN_ROOT}/references/setup-project-board.md`. Boards differ in what they call
+   their statuses, so map the Status options onto the three roles co-dwerker moves items through
+   using the role-name table in conventions §10, and say which option each role got (or that a
+   role was skipped). If the state file already has `status_role_map` and every id in it is
+   still among the field's options, keep it without asking.
+   Record `project_number`, `project_title`, `project_id`, `status_field_id`,
+   `status_options` (name → option id), `status_role_map` (role → option id or null),
+   `priority_field_id`, `priority_options` with `checkpoint.py set` so later phases, the
+   pr-review and new-issue skills, and the exit skill have them. Mark `0b.project` and
+   `0b.fields` completed.
 
 ## Phase 1: Standup
 
@@ -125,13 +131,43 @@ Present:
 
 - **Shipped since last session** — Done or closed since `$LAST_DATE`, with PR links
   (`closedByPullRequestsReferences`).
-- **In progress** — In Progress / In Review items, or open issues assigned to the user; cross-check
-  against `progress.issue` and active branches.
-- **Next by priority** — Ready items (project) or open issues (repo) sorted P0 > P1 > P2 > P3,
+- **In progress** — items in the board's `in_progress` or `in_review` role (project), or open
+  issues assigned to the user; cross-check against `progress.issue` and active branches.
+- **Next by priority** — items in neither of those roles nor `done` (project) or open issues
+  (repo) sorted P0 > P1 > P2 > P3,
   then milestone due date, then oldest first; unlabelled issues last.
 - **Blockers** — "blocked" / "waiting" labels, unresolved dependency references in issue bodies.
 
 `checkpoint.py mark 1.report completed`.
+
+### `1.reconcile`
+
+Issues get left behind when a PR fixed them without a closing keyword, or when a fix was waiting
+on a later observation nobody came back to. Conventions §10 holds the mechanics (scan pipeline,
+the question, the close and bookkeeping commands); this step supplies the inputs and runs them
+with `$WHEN`=`standup`, in both modes.
+
+**a. Pending verification.** Entries in `progress.context.pending_verification`
+(`checkpoint.py show` prints them) whose `check_after` is `$TODAY` or earlier.
+
+**b. Orphan scan.** PRs merged in the last 30 days (newest 50) and the open issues:
+
+```bash
+SINCE=$(date -v-30d +%Y-%m-%d 2>/dev/null || date -d '30 days ago' +%Y-%m-%d)
+gh pr list --repo "$REPO_OWNER_NAME" --state merged --search "merged:>=$SINCE" \
+  --json number,title,body,mergedAt --limit 50 > /tmp/co-dwerker-merged.json
+gh issue list --repo "$REPO_OWNER_NAME" --state open --json number,title --limit 200 \
+  > /tmp/co-dwerker-open.json
+```
+
+Run the §10 pipeline on the two files and drop `reconcile_dismissed` pairs.
+
+**c. Planned-queue hygiene.** For each number in `planned_issues`,
+`gh issue view $N --repo "$REPO_OWNER_NAME" --json state --jq .state`; drop the closed ones with
+a one-line note and `checkpoint.py set --set planned_issues='[...]'`. No question.
+
+Add a **Left behind** section to the standup and ask and act per §10. Then
+`checkpoint.py mark 1.reconcile completed`.
 
 ### `1.recommend`
 
@@ -172,9 +208,12 @@ it is read again from inside the worktree on resume).
 gh project item-list $PROJECT_NUMBER --owner "$REPO_OWNER" --format json \
   | jq -r '.items[] | select(.content.number? == '$ISSUE_NUMBER') | .id'        # ITEM_ID
 gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID \
-  --single-select-option-id $STATUS_IN_PROGRESS_ID
+  --single-select-option-id $STATUS_ROLE_IN_PROGRESS_ID
 checkpoint.py set --set item_id=$ITEM_ID
 ```
+
+`$STATUS_ROLE_IN_PROGRESS_ID` is `status_role_map.in_progress`. When it is `null`, still record
+`item_id` and say "board has no in-progress status; skipping the move".
 
 ### `2.discovered`
 
@@ -205,8 +244,12 @@ without a baseline boot the verification diff in Step 3.5a has nothing to compar
 
 ### `3.2` Plan
 
-Invoke `superpowers:writing-plans`; it turns the design doc into an implementation plan.
-`checkpoint.py mark 3.2 completed --set plan_doc=<absolute path>`.
+Invoke `superpowers:writing-plans`; it turns the design doc into an implementation plan. Then set
+the resolution set (conventions §10): start from `[$ISSUE_NUMBER]`; if the plan also fully covers
+other open issues, add them to `resolves_issues`; if it covers part of one, put that number in
+`refs_issues` instead.
+
+`checkpoint.py mark 3.2 completed --set plan_doc=<absolute path> --set resolves_issues='[...]' --set refs_issues='[...]'`
 
 ### `3.3` Isolate
 
@@ -283,9 +326,19 @@ commits.
 
 ### `3.7` Create PR
 
+Re-read `resolves_issues` and `refs_issues` against what was actually implemented and correct them
+(`checkpoint.py set --set …`). If `resolves_issues` is unset (a session resumed from before
+v1.2.0, or a skipped 3.2 mark), set it to `[$ISSUE_NUMBER]` now. If any resolved issue should only be closed for good after a later
+observation (tomorrow's scheduled run, a deploy, a customer confirming), record it with the
+condition and the date to ask on, and ask the user for the date if the design did not give one:
+`checkpoint.py set --set verify_later='[{"issue": N, "condition": "<observable>", "check_after": "YYYY-MM-DD"}]'`.
+Those issues still get a `Closes` line; Phase 5 writes the verification record.
+
 Compose the test plan from `progress.context` (local-app.md §6 lists the local-app lines). Fill in
 every `<placeholder>` and every `$VAR` below with literal text before running; the quoted heredoc
-does not expand variables.
+does not expand variables. One `Closes #N` line per entry of `resolves_issues` and one `Refs`
+line per entry of `refs_issues`; GitHub honours one issue per keyword, so never write
+`Closes #16 #17`.
 
 ```bash
 gh pr create --title "<concise title>" --body "$(cat <<'EOF'
@@ -293,6 +346,8 @@ gh pr create --title "<concise title>" --body "$(cat <<'EOF'
 <what changed and why, as bullets>
 
 Closes #$ISSUE_NUMBER
+Closes #<each further number in resolves_issues, one per line>
+Refs #<each number in refs_issues> — <what this PR did and what remains>
 
 ## Test plan
 - [x] Existing tests pass; new tests cover the change
@@ -305,10 +360,12 @@ EOF
 checkpoint.py set --set pr_number=<number> --set pr_url=<url>
 ```
 
+Delete the `Refs` line when `refs_issues` is empty.
+
 ### `3.8` Review and approval
 
 Invoke `co-dwerker:pr-review`. It runs `pr-review-toolkit:review-pr`, fixes findings until the
-review is clean, moves the board item to In Review in project mode, surfaces discovered work,
+review is clean, moves the board item to its `in_review` role in project mode, surfaces discovered work,
 and holds its own user-approval gate. It reads `pr_number` and the rest from `progress.context`,
 so it will not ask which PR. When it returns, `checkpoint.py gate 3` and go to Phase 4.
 
@@ -353,15 +410,43 @@ Otherwise `checkpoint.py mark 5.ci completed`.
 
 `gh pr merge $DOCS_PR_NUMBER --repo "$DOCS_REPO" --squash --delete-branch`
 
+No approval step here: the docs repo owner reviews companion docs in GitBook after the sync
+(docs skill header). It runs after `5.merge` so published docs never lead the code.
+
 ### `5.close-issue`
 
-If the merge did not auto-close it:
-`gh issue close $ISSUE_NUMBER --repo "$REPO_OWNER_NAME" --reason completed`. Mark `5.close-issue`
-completed (and `5.docs-merge` / `5.board` when they ran).
+Close every issue the PR declared it resolves (conventions §10), not only `$ISSUE_NUMBER`. If
+`resolves_issues` is unset (a session resumed from before v1.2.0), treat it as `[$ISSUE_NUMBER]`;
+an empty loop here would close nothing, which is the failure this release exists to end. For
+each `N` in `resolves_issues`:
+
+```bash
+gh issue view $N --repo "$REPO_OWNER_NAME" --json state --jq .state
+```
+
+- `OPEN` and not in `verify_later` → the merge did not auto-close it (a missing keyword, or the
+  PR merged into a non-default branch):
+  `gh issue close $N --repo "$REPO_OWNER_NAME" --reason completed --comment "Resolved by PR #$PR_NUMBER (merged $TODAY). Closed by co-dwerker Phase 5."`
+- In `verify_later` (open or closed) → record it and say so on the issue:
+  ```bash
+  checkpoint.py set --append pending_verification='{"issue": N, "pr": $PR_NUMBER, "condition": "<condition>", "check_after": "<check_after>", "recorded": "$TODAY"}'
+  gh issue comment $N --repo "$REPO_OWNER_NAME" --body "Fix merged in PR #$PR_NUMBER. Pending verification: <condition>. co-dwerker will ask about this at the first standup on or after <check_after>."
+  ```
+  If GitHub already closed it on merge, leave it closed; the record is what brings it back.
+- `CLOSED` otherwise → nothing to do.
+
+For each `N` in `refs_issues`: `checkpoint.py set --append reconcile_dismissed='{"issue": N, "pr": $PR_NUMBER}'`.
+The PR body mentions them, so without this the next standup's orphan scan offers them as
+candidates for closing.
+
+Mark `5.close-issue` completed (and `5.docs-merge` / `5.board` when they ran).
 
 ### `5.board` (project mode; otherwise `--skip board`)
 
-`gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_DONE_ID`
+`gh project item-edit --project-id $PROJECT_ID --id $ITEM_ID --field-id $STATUS_FIELD_ID --single-select-option-id $STATUS_ROLE_DONE_ID`
+
+`$STATUS_ROLE_DONE_ID` is `status_role_map.done`. When it is `null`, say that only the board's own
+"Item closed" workflow will move the item and continue.
 
 ### `5.cleanup`
 

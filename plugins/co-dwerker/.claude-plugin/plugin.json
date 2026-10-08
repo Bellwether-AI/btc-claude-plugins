@@ -1,6 +1,6 @@
 {
   "name": "co-dwerker",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Structured daily development workflow for any GitHub repo: start or resume a session, standup, triage and work issues, brainstorm, implement with baselines and local-app verification, review, merge, docs, and wind down with state persistence. Repo mode (GitHub Issues with priority labels) or project mode (GitHub Projects board). Built for the most capable Claude models.",
   "author": {
     "name": "Bellwether AI"

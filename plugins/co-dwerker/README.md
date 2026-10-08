@@ -18,7 +18,7 @@ Two work modes, remembered per repo:
 | `/co-dwerker:pr-review` | Review any PR: automated review, fix findings, board update, approval gate |
 | `/co-dwerker:docs` | Create or update companion documentation for a PR or issue |
 | `/co-dwerker:new-issue` | Create a GitHub issue, with board priority/status in project mode |
-| `/co-dwerker:exit` | Wind down: state file, board, memories, session record, summary |
+| `/co-dwerker:exit` | Wind down: state file, issue and board reconciliation, memories, session record, summary |
 
 `/co-dwerker:work-bellwether-project` remains as a hidden alias that redirects to `work`.
 
@@ -37,6 +37,11 @@ baseline local-app boot, plan, isolate in a worktree, implement with TDD, verify
 the app boots and diff its logs against the baseline, changelog, PR, review. Every step is
 checkpointed to `.co-dwerker.state.json` so nothing is skipped and a crash or compacted context
 resumes at the right step.
+
+**Standup** ends with a **Left behind** check: open issues that merged PRs reference, fixes whose
+verification date has arrived, and closed issues still in the planned queue. **Close** closes
+every issue the PR declared it resolves, not just the one the session started on, and records
+fixes that await a later observation so the next standup asks about them.
 
 ## What v1.0.0 changed
 
@@ -117,7 +122,8 @@ plugins/co-dwerker/
 
 ## GitHub Project board (project mode)
 
-Expected fields, created on first run if missing:
+Fields a new board gets on first run. An existing board keeps its own Status names; co-dwerker
+maps them onto in-progress / in-review / done roles (see `references/conventions.md` §10):
 
 | Field | Type | Values |
 |-------|------|--------|
