@@ -6,6 +6,17 @@ Claude Code plugin marketplace for Bellwether internal plugins.
 
 This repo is a Claude Code plugin marketplace — a catalog of internally-developed plugins that extend Claude Code with custom skills, agents, hooks, and MCP server bundles.
 
+## Moved plugins
+
+These plugins moved to [Bellwether-Technology/bellwether-claude-plugins](https://github.com/Bellwether-Technology/bellwether-claude-plugins) on 2026-10-07. The copies here are frozen at the versions below and will not receive updates; uninstall them from this marketplace and reinstall from the new one.
+
+| Plugin | Frozen here at | Install from the new marketplace |
+|---|---|---|
+| `co-dwerker` | 1.2.0 | `/plugin install co-dwerker@bellwether-claude-plugins` |
+| `claude-extra-usage-limiter-bellwether` | 1.0.0 | `/plugin install claude-extra-usage-limiter-bellwether@bellwether-claude-plugins` |
+
+New Bellwether plugins should be added to the new repository.
+
 ## Installing plugins from this marketplace
 
 In Claude Code, run:

@@ -1,5 +1,9 @@
 # co-dwerker
 
+> **Moved.** `co-dwerker` now lives in [bellwether-claude-plugins](https://github.com/Bellwether-Technology/bellwether-claude-plugins)
+> (`/plugin install co-dwerker@bellwether-claude-plugins`). This copy is frozen at 1.2.0
+> as of 2026-10-07 and will not receive updates.
+
 Structured daily development workflow plugin for Claude Code. Takes GitHub issues from standup
 to merged PR by composing the superpowers and pr-review-toolkit skills, verifies the app actually
 boots before a PR is opened, and persists enough state that the next session resumes exactly
